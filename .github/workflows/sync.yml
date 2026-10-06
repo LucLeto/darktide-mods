@@ -1,0 +1,43 @@
+name: Synchronize mods
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 * * * *'
+
+permissions: {}
+
+concurrency:
+  group: synchronize-mods
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the aggregate default branch
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 1
+
+      - name: Synchronize upstream mods and licenses
+        shell: bash
+        run: bash .github/scripts/sync.sh
+
+      - name: Commit and push changes if needed
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add -- Radar IconBrowser OverflowMeter ShowCnJaKoGlyphsPlus PerfectThrust LICENSES SOURCES.md
+          if git diff --cached --quiet; then
+            echo "No upstream changes; no synchronization commit needed."
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Sync mods from upstream repositories'
+          git push origin HEAD

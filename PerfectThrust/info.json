@@ -1,0 +1,10 @@
+{
+  "name": "Perfect Thrust",
+  "description": "Adds a ring around the crosshair while charging a heavy attack and signals READY once every charge-dependent effect, such as the Thrust and Slow and Steady blessings, weapon windup bonuses or the Ogryn talent Crunch!, has reached its maximum stacks.",
+  "version": "1.0.0",
+  "author": "LucLeto",
+  "source": "https://github.com/LucLeto/darktide-mods-perfect-thrust",
+  "funding": {
+    "kofi": "https://ko-fi.com/lucleto"
+  }
+}

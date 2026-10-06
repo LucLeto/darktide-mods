@@ -1,0 +1,11 @@
+{
+  "name": "Overflow Meter",
+  "description": "Adds a multiplayer-focused HUD for Skitarii Power Overflow and Veteran Born Leader, showing estimated Toughness sharing, Coherency, team demand, and mission statistics.",
+  "version": "1.5.0",
+  "author": "LucLeto",
+  "homepage": "https://www.nexusmods.com/warhammer40kdarktide/mods/1095",
+  "source": "https://github.com/LucLeto/darktide-mods-overflow-meter",
+  "funding": {
+    "kofi": "https://ko-fi.com/lucleto"
+  }
+}
