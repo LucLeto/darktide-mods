@@ -1,3 +1,21 @@
+--- The HUD element that samples Toughness sharing and draws the meter and the summary panel.
+-- Once a second it checks whether the local player is in a mission as a supported class with its
+-- sharing talent (a Skitarius with Power Overflow or a Veteran with Born Leader) and wires up that
+-- archetype's sources and pulse module. Four times a second it samples: it measures what the
+-- replicated Toughness bar gained, sums the active continuous sources (Skitarii) or the modelled
+-- at-full regeneration (Veteran), drains the pulse queues, counts the allies in Coherency and those
+-- missing Toughness, feeds the estimator and adds the sample to the mission statistics. The meter
+-- (gauge, readout, state and context lines) is only redrawn when a displayed value changes.
+--
+-- The mission summary panel is a second widget of the same element, shown while the hold key is
+-- down or permanently. The element also pushes the local totals to the scoreboard snapshot once a
+-- second, and follows Custom HUD: a box moved or resized there keeps that position and size.
+--
+-- Loaded by DMF from the `register_hud_element` call in `OverflowMeter.lua` and returned as the
+-- `HudElementOverflowMeter` class. The rate maths come from `OverflowMeter_estimator.lua`, the
+-- gauge layout from `OverflowMeter_gauge_geometry.lua`, and the archetype modules through `mod`.
+-- classmod: HudElementOverflowMeter
+-- author: LucLeto
 local mod = get_mod("OverflowMeter")
 local UIWidget = require("scripts/managers/ui/ui_widget")
 local UIWorkspaceSettings = require("scripts/settings/ui/ui_workspace_settings")
@@ -19,49 +37,68 @@ local table_clear = table.clear
         end
     end
 
+-- ----------------------------------------------------------------------------
+-- Constants
+-- ----------------------------------------------------------------------------
+
+--- Timing and thresholds. Support is checked every second and sharing sampled every 0.25 s;
+-- full means 99.9 % Toughness, and an ally misses Toughness above half a point of damage.
 local GUARD_INTERVAL = 1
 local SAMPLE_INTERVAL = 0.25
 local FULL_TOUGHNESS_EPSILON = 0.999
 local MISSING_TOUGHNESS_EPSILON = 0.5
 local ARCHETYPE_VETERAN = "veteran"
 
+--- Supported archetypes: the sharing talent's buff template, its id in the profile's talents, the
+-- meter title and the burst flash text.
 local ARCHETYPES = {
     cryptic = {
         talent_buff = "cryptic_shared_toughness",
         talent_id = "cryptic_shared_toughness",
-        title_key = "hud_title"
+        title_key = "hud_title",
+        burst_key = "ctx_burst_discharge"
     },
     veteran = {
         talent_buff = "veteran_share_toughness_gained",
         talent_id = "veteran_allies_in_coherency_share_toughness_gain",
-        title_key = "hud_title_veteran"
+        title_key = "hud_title_veteran",
+        burst_key = "ctx_burst_share"
     },
 }
 
+--- Samples the context line shows a burst flash for (1.25 s).
 local BURST_FLASH_SAMPLES = 5
 
+--- Estimator states. The generic sharing state stands in for Useful sharing and No demand while
+-- the allies-missing display is off.
 local STATE_INACTIVE = Estimator.STATE_INACTIVE
 local STATE_READY = Estimator.STATE_READY
 local STATE_SHARING_USEFUL = Estimator.STATE_SHARING_USEFUL
 local STATE_SHARING_NO_DEMAND = Estimator.STATE_SHARING_NO_DEMAND
 local DISPLAY_STATE_SHARING_GENERIC = "sharing_generic"
+--- Localization keys of the output tier badges.
 local TIER_LOC_KEYS = {
     [Estimator.TIER_LOW] = "tier_low",
     [Estimator.TIER_MID] = "tier_mid",
     [Estimator.TIER_HIGH] = "tier_high"
 }
 
+--- Values of the `Meter style` setting.
 local METER_STYLE_GAUGE = "gauge"
 local METER_STYLE_TEXT = "text"
 local METER_STYLE_BOTH = "both"
 local METER_STYLE_NONE = "none"
 
+--- Custom HUD: its mod id, the saved-settings keys of our two boxes, and the clamp applied to
+-- the effective scale.
 local CUSTOM_HUD_MOD_NAME = "custom_hud"
 local CUSTOM_HUD_NODE_KEY = "HudElementOverflowMeter|overflow_meter"
 local CUSTOM_HUD_SUMMARY_NODE_KEY = "HudElementOverflowMeter|overflow_summary"
 local MIN_EFFECTIVE_SCALE = 0.25
 local MAX_EFFECTIVE_SCALE = 3
 
+--- Meter layout in unscaled pixels: the box, the gauge centre, radius and arc (240° opening at
+-- the bottom), and the segment count and size.
 local NODE_W = 280
 local NODE_H = 172
 local GAUGE_CENTER_X = 140
@@ -73,6 +110,7 @@ local SEGMENT_COUNT = 24
 local SEG_W = 9
 local SEG_H = 13
 
+--- Segment centres along the gauge arc.
 local SEGMENTS = Geometry.build_segments({
     count = SEGMENT_COUNT,
     radius = GAUGE_RADIUS,
@@ -82,6 +120,7 @@ local SEGMENTS = Geometry.build_segments({
     sweep_deg = GAUGE_SWEEP_DEG
 })
 
+--- Meter font sizes, and vertical text offsets for each layout (gauge only, text only, both).
 local TITLE_FONT_SIZE = 18
 local READOUT_FONT_SIZE = 27
 local UNIT_FONT_SIZE = 12
@@ -97,6 +136,7 @@ local TEXT_CONTEXT_OFFSET_Y = 48
 local BOTH_STATE_OFFSET_Y = 138
 local BOTH_CONTEXT_OFFSET_Y = 158
 
+--- Base alpha of each meter part, multiplied by the opacity setting.
 local TITLE_ALPHA = 255
 local READOUT_ALPHA = 255
 local UNIT_ALPHA = 190
@@ -106,16 +146,20 @@ local SEG_LIT_ALPHA = 235
 local SEG_DIM_ALPHA = 80
 local SEG_PEAK_ALPHA = 255
 
+--- Gauge colours: the lit gradient from cool teal through amber to hot red, unlit segments and
+-- the peak marker.
 local GRAD_COLD = { 90, 205, 180 }
 local GRAD_MID = { 240, 190, 90 }
 local GRAD_HOT = { 235, 92, 70 }
 local SEG_DIM_RGB = { 70, 82, 86 }
 local SEG_PEAK_RGB = { 245, 248, 240 }
 
+--- Readout colours: grey when not sharing, teal while sharing, gold while an ally needs Toughness.
 local READOUT_RGB_DIM = { 150, 160, 164 }
 local READOUT_RGB_SHARING = { 120, 205, 185 }
 local READOUT_RGB_USEFUL = { 245, 205, 120 }
 
+--- Summary panel layout, fonts and alphas, in unscaled pixels.
 local SUM_NODE_W = 260
 local SUM_NODE_H = 152
 local SUM_ROW_COUNT = 5
@@ -128,6 +172,7 @@ local SUM_TITLE_ALPHA = 255
 local SUM_LABEL_ALPHA = 200
 local SUM_VALUE_ALPHA = 255
 
+--- Summary rows: label localization keys and the widget content ids of labels and values.
 local SUM_LABEL_KEYS = {
     "summary_generated",
     "summary_replenished",
@@ -144,12 +189,17 @@ for i = 1, SUM_ROW_COUNT do
     SUM_VALUE_IDS[i] = "sum_value_" .. i
 end
 
+--- Prefix that marks an estimated value.
 local ESTIMATE_PREFIX = "~"
 
+--- Linear interpolation between two numbers.
 local function _lerp(a, b, t)
     return a + (b - a) * t
 end
 
+--- Returns the gauge gradient colour at a position along the arc.
+-- number: t position from 0 (first segment) to 1 (last segment)
+-- treturn: tab `{ r, g, b }`
 local function _gradient_rgb(t)
     local c0, c1, local_t
 
@@ -162,12 +212,22 @@ local function _gradient_rgb(t)
     return { math_floor(_lerp(c0[1], c1[1], local_t) + 0.5), math_floor(_lerp(c0[2], c1[2], local_t) + 0.5), math_floor(_lerp(c0[3], c1[3], local_t) + 0.5) }
 end
 
+--- Precomputed lit colour of each segment.
 local SEGMENT_RGB = {}
 
 for i = 1, SEGMENT_COUNT do
     SEGMENT_RGB[i] = _gradient_rgb(SEGMENTS[i].t)
 end
 
+-- ----------------------------------------------------------------------------
+-- Widget definitions
+-- ----------------------------------------------------------------------------
+
+--- Builds the scenegraph and the two widgets.
+-- The meter has the title, one rect per gauge segment, the readout and its unit, and the state
+-- and context lines; the summary panel has its title and a label and value per row. Sizes and
+-- offsets here are unscaled; `_apply_display_settings` scales them.
+-- treturn: tab definitions with `scenegraph_definition` and `widget_definitions`
 local function _build_definitions()
     local passes = {
         {
@@ -346,6 +406,14 @@ local Definitions = _build_definitions()
 
 local HudElementOverflowMeter = class("HudElementOverflowMeter", "HudElementBase")
 
+-- ----------------------------------------------------------------------------
+-- Lifecycle
+-- ----------------------------------------------------------------------------
+
+--- Initialises the element with both widgets hidden and applies the display settings.
+-- tab: parent HUD that owns the element
+-- int: draw_layer element draw layer
+-- number: start_scale initial UI scale
 HudElementOverflowMeter.init = function (self, parent, draw_layer, start_scale)
     HudElementOverflowMeter.super.init(self, parent, draw_layer, start_scale, Definitions)
 
@@ -377,6 +445,7 @@ HudElementOverflowMeter.init = function (self, parent, draw_layer, start_scale)
     self:_apply_display_settings(mod._settings)
 end
 
+--- Forgets every last-drawn value, so the next refresh rewrites everything.
 HudElementOverflowMeter._clear_render_cache = function (self)
     self._last_display_state = nil
     self._last_rate_str = nil
@@ -399,6 +468,16 @@ HudElementOverflowMeter._clear_render_cache = function (self)
     end
 end
 
+--- Per-frame update.
+-- Reapplies the display settings after a change and resets after a reset request. Once a second
+-- it follows Custom HUD changes, rechecks support and pushes the scoreboard snapshot. The summary
+-- panel refreshes every frame when its data changed; while supported and the player unit is
+-- alive, sharing is sampled and the meter refreshed every `SAMPLE_INTERVAL`.
+-- number: dt frame delta time
+-- number: t time
+-- tab: ui_renderer UI renderer
+-- tab: render_settings render settings
+-- tab: input_service input service
 HudElementOverflowMeter.update = function (self, dt, t, ui_renderer, render_settings, input_service)
     HudElementOverflowMeter.super.update(self, dt, t, ui_renderer, render_settings, input_service)
 
@@ -480,6 +559,17 @@ HudElementOverflowMeter.update = function (self, dt, t, ui_renderer, render_sett
     end
 end
 
+-- ----------------------------------------------------------------------------
+-- Custom HUD and support
+-- ----------------------------------------------------------------------------
+
+--- Reads Custom HUD's saved settings for one of our boxes.
+-- Custom HUD positions a box it manages itself but never resizes it, so a saved width that differs
+-- from the box's default is applied here as a scale factor.
+-- string: node_key saved-settings key of the box
+-- number: node_width the box's unscaled width
+-- treturn: bool whether Custom HUD manages the box
+-- treturn: ?number scale factor when it was resized there
 HudElementOverflowMeter._custom_hud_node = function (self, node_key, node_width)
     local custom_hud = get_mod(CUSTOM_HUD_MOD_NAME)
 
@@ -507,10 +597,21 @@ HudElementOverflowMeter._custom_hud_node = function (self, node_key, node_width)
     return true, nil
 end
 
+--- Reads Custom HUD's saved settings for the meter box.
+-- treturn: bool whether Custom HUD manages the box
+-- treturn: ?number scale factor when it was resized there
 HudElementOverflowMeter._custom_hud_layout = function (self)
     return self:_custom_hud_node(CUSTOM_HUD_NODE_KEY, NODE_W)
 end
 
+--- Returns whether the meter can run now, and wires the archetype's modules when it can.
+-- Needs a mission (not the hub), a living local player unit of a supported archetype with its
+-- sharing talent, and the buff and toughness extensions. The talent is read from the talent
+-- extension, falling back to the profile's talents, whose entries are numbers before 1.13 and
+-- `{ tier, ... }` tables since. On success it caches the extensions in the sample context and
+-- enables the archetype's pulse module.
+-- tab: settings cached settings
+-- treturn: bool
 HudElementOverflowMeter._check_supported = function (self, settings)
     local alive_units = ALIVE
 
@@ -565,6 +666,10 @@ HudElementOverflowMeter._check_supported = function (self, settings)
         local talents = profile and profile.talents
         local points = talents and talents[archetype_config.talent_id]
 
+        if type(points) == "table" then
+            points = points.tier
+        end
+
         has_talent = points ~= nil and points ~= 0
     end
 
@@ -595,6 +700,9 @@ HudElementOverflowMeter._check_supported = function (self, settings)
     return true
 end
 
+--- Switches to an archetype's sources, pulses, estimator mode, statistics context and texts.
+-- Does nothing when the archetype is unchanged.
+-- string: archetype archetype name
 HudElementOverflowMeter._set_archetype = function (self, archetype)
     if self._archetype == archetype then
         return
@@ -620,6 +728,13 @@ HudElementOverflowMeter._set_archetype = function (self, archetype)
     self._force_refresh = true
 end
 
+-- ----------------------------------------------------------------------------
+-- Sampling
+-- ----------------------------------------------------------------------------
+
+--- Counts the living allies in Coherency and those of them missing Toughness.
+-- treturn: int allies
+-- treturn: int allies missing Toughness
 HudElementOverflowMeter._count_allies = function (self)
     local allies = 0
     local allies_missing = 0
@@ -651,6 +766,12 @@ HudElementOverflowMeter._count_allies = function (self)
     return allies, allies_missing
 end
 
+--- Returns how much Toughness the bar gained since the last sample.
+-- A sample in which maximum Toughness changed is skipped, so a raised cap (such as Duty and
+-- Honour's bonus Toughness) is not mistaken for a replenish.
+-- number: toughness_damage current Toughness damage
+-- number: max_toughness current maximum Toughness
+-- treturn: number Toughness points recovered, 0 or more
 HudElementOverflowMeter._consume_bar_gain = function (self, toughness_damage, max_toughness)
     local last_damage = self._last_toughness_damage
     local bar_gain = 0
@@ -669,6 +790,30 @@ HudElementOverflowMeter._consume_bar_gain = function (self, toughness_damage, ma
     return bar_gain
 end
 
+--- Starts a burst flash for a new one-off share, or counts down the current one.
+-- A new burst also raises the estimator's burst marker while an ally is in Coherency.
+-- number: burst_share Toughness each ally gets from the burst, 0 for none
+-- int: allies allies in Coherency
+-- int: ally_multiplier allies counted by the rate display (all of them, or 1 per ally)
+HudElementOverflowMeter._update_burst_flash = function (self, burst_share, allies, ally_multiplier)
+    if burst_share > 0 then
+        if allies > 0 then
+            self._estimator:register_burst(burst_share * ally_multiplier / SAMPLE_INTERVAL)
+        end
+
+        self._burst_flash_amount = burst_share
+        self._burst_flash_remaining = BURST_FLASH_SAMPLES
+    elseif self._burst_flash_remaining > 0 then
+        self._burst_flash_remaining = self._burst_flash_remaining - 1
+    end
+end
+
+--- Takes one Power Overflow sample, or hands over to `_sample_veteran` for a Veteran.
+-- Power Overflow shares 25 % of what is replenished at full. The continuous rate is the sum of the
+-- active adapters, scaled by the replenish stat buffs; it counts only at full. Pulses that landed
+-- at full add a one-sample spike and a Voltaic Overcharge restore a burst flash. The statistics
+-- get the bar gain, the overflow (pulse overflow plus the continuous amount at full) and the
+-- shareable amount.
 HudElementOverflowMeter._sample = function (self)
     if self._archetype == ARCHETYPE_VETERAN then
         self:_sample_veteran()
@@ -739,12 +884,16 @@ HudElementOverflowMeter._sample = function (self)
         pulse_offered_per_second = pending_pulse_fraction * max_toughness * sources.share_fraction * ally_multiplier / SAMPLE_INTERVAL
     end
 
+    local pending_burst_fraction = pulses.consume_burst_fraction()
+
+    self:_update_burst_flash(pending_burst_fraction * max_toughness * sources.share_fraction, allies, ally_multiplier)
+
     local nominal_ceiling = sources.available_max_fraction(ctx) * max_toughness * sources.share_fraction * ally_multiplier
 
     self._estimator:sample(is_full, total_rate > 0, share_per_ally_per_second * ally_multiplier, pulse_offered_per_second, nominal_ceiling, allies, allies_missing)
 
     local stats_overflow = pulses.consume_overflow()
-    local stats_shareable = pending_pulse_fraction > 0 and pending_pulse_fraction * max_toughness or 0
+    local stats_shareable = (pending_pulse_fraction + pending_burst_fraction) * max_toughness
 
     if is_full and total_rate > 0 then
         local continuous_amount = total_rate * max_toughness * replenish_multiplier * SAMPLE_INTERVAL
@@ -756,6 +905,11 @@ HudElementOverflowMeter._sample = function (self)
     Stats.add_event(bar_gain, stats_overflow, stats_shareable, allies)
 end
 
+--- Takes one Born Leader sample.
+-- Born Leader shares 20 % of every replenish. Below full the bar gain is the continuous rate,
+-- which already covers every source; at full the modelled regeneration takes its place, scaled
+-- by the replenish stat buffs. Pulses add their clamped excess, and Voice of Command or
+-- Infiltrate a burst flash. Everything generated (bar gain plus overflow) is shareable.
 HudElementOverflowMeter._sample_veteran = function (self)
     local ctx = self._ctx
     local sources = self._sources
@@ -813,18 +967,7 @@ HudElementOverflowMeter._sample_veteran = function (self)
         end
     end
 
-    local burst_share = pulses.consume_burst()
-
-    if burst_share > 0 then
-        if allies > 0 then
-            self._estimator:register_burst(burst_share * ally_multiplier / SAMPLE_INTERVAL)
-        end
-
-        self._burst_flash_amount = burst_share
-        self._burst_flash_remaining = BURST_FLASH_SAMPLES
-    elseif self._burst_flash_remaining > 0 then
-        self._burst_flash_remaining = self._burst_flash_remaining - 1
-    end
+    self:_update_burst_flash(pulses.consume_burst(), allies, ally_multiplier)
 
     local nominal_ceiling = sources.available_max_fraction(ctx) * max_toughness * share_fraction * ally_multiplier
 
@@ -835,6 +978,14 @@ HudElementOverflowMeter._sample_veteran = function (self)
     Stats.add_event(bar_gain, stats_overflow, bar_gain + stats_overflow, allies)
 end
 
+-- ----------------------------------------------------------------------------
+-- Meter display
+-- ----------------------------------------------------------------------------
+
+--- Returns the state to display, merging Useful sharing and No demand while the allies-missing
+-- display is off.
+-- tab: settings cached settings
+-- treturn: string
 HudElementOverflowMeter._display_state = function (self, settings)
     local state = self._estimator.state
 
@@ -845,6 +996,9 @@ HudElementOverflowMeter._display_state = function (self, settings)
     return state
 end
 
+--- Shows or hides the meter and refreshes the gauge and the texts after a sample.
+-- The meter is hidden for the `None` style, and in the Inactive state unless that is shown.
+-- tab: settings cached settings
 HudElementOverflowMeter._refresh_display = function (self, settings)
     local estimator = self._estimator
     local widget = self._widgets_by_name.meter
@@ -880,6 +1034,10 @@ HudElementOverflowMeter._refresh_display = function (self, settings)
     self._force_refresh = false
 end
 
+--- Recolours the segments and updates the readout when the lit count, the peak or the rate changed.
+-- tab: settings cached settings
+-- string: display_state state from `_display_state`
+-- treturn: bool whether anything changed
 HudElementOverflowMeter._refresh_gauge = function (self, settings, display_state)
     local estimator = self._estimator
     local widget = self._widgets_by_name.meter
@@ -953,6 +1111,12 @@ HudElementOverflowMeter._refresh_gauge = function (self, settings, display_state
     return dirty
 end
 
+--- Rebuilds the state and context lines when any value they show changed.
+-- The state line carries the rate and, when enabled, the tier badge; the context line shows the
+-- allies, the allies in need or a hint, and is replaced by the burst flash while one runs.
+-- tab: settings cached settings
+-- string: display_state state from `_display_state`
+-- treturn: bool whether anything changed
 HudElementOverflowMeter._refresh_text = function (self, settings, display_state)
     local estimator = self._estimator
     local allies = estimator.allies
@@ -1010,7 +1174,9 @@ HudElementOverflowMeter._refresh_text = function (self, settings, display_state)
     end
 
     if burst_active then
-        context_text = mod:localize("ctx_burst_share", burst_amount)
+        local archetype_config = ARCHETYPES[self._archetype]
+
+        context_text = mod:localize(archetype_config and archetype_config.burst_key or "ctx_burst_share", burst_amount)
     end
 
     local dirty = false
@@ -1030,6 +1196,14 @@ HudElementOverflowMeter._refresh_text = function (self, settings, display_state)
     return dirty
 end
 
+-- ----------------------------------------------------------------------------
+-- Summary panel and scoreboard
+-- ----------------------------------------------------------------------------
+
+--- Sets a summary row's value text if it changed.
+-- int: index row index
+-- string: text value text
+-- treturn: bool whether it changed
 HudElementOverflowMeter._set_summary_value = function (self, index, text)
     local sum_value_cache = self._sum_value_cache
 
@@ -1043,6 +1217,9 @@ HudElementOverflowMeter._set_summary_value = function (self, index, text)
     return true
 end
 
+--- Shows the summary panel while the hold key is down or it is always shown, and while there is
+-- something to show; rewrites its values when the statistics changed.
+-- tab: settings cached settings
 HudElementOverflowMeter._refresh_summary = function (self, settings)
     local widget = self._widgets_by_name.summary
 
@@ -1085,6 +1262,9 @@ HudElementOverflowMeter._refresh_summary = function (self, settings)
     end
 end
 
+--- Copies the local totals into the scoreboard snapshot and publishes the change.
+-- Skipped while neither the statistics nor the snapshot settings changed.
+-- tab: settings cached settings
 HudElementOverflowMeter._push_scoreboard = function (self, settings)
     local stats_version = Stats.version
     local settings_version = mod._snapshot_settings_version
@@ -1108,6 +1288,16 @@ HudElementOverflowMeter._push_scoreboard = function (self, settings)
     Snapshot.publish(false)
 end
 
+-- ----------------------------------------------------------------------------
+-- Text helpers
+-- ----------------------------------------------------------------------------
+
+--- Returns a state text with the rate, or the plain text while the rate is hidden.
+-- string: plain_text state text without the rate
+-- string: rate_key localization key of the text with the rate
+-- string: rate_str formatted rate
+-- tab: settings cached settings
+-- treturn: string
 HudElementOverflowMeter._rate_state_text = function (self, plain_text, rate_key, rate_str, settings)
     if not settings.show_rate then
         return plain_text
@@ -1116,6 +1306,10 @@ HudElementOverflowMeter._rate_state_text = function (self, plain_text, rate_key,
     return mod:localize(rate_key, rate_str)
 end
 
+--- Returns the allies-in-Coherency context text, or an empty string while it is hidden.
+-- int: allies allies in Coherency
+-- tab: settings cached settings
+-- treturn: string
 HudElementOverflowMeter._allies_context_text = function (self, allies, settings)
     if not settings.show_allies_count then
         return ""
@@ -1124,6 +1318,11 @@ HudElementOverflowMeter._allies_context_text = function (self, allies, settings)
     return mod:localize(allies == 1 and "ctx_allies_one" or "ctx_allies_many", allies)
 end
 
+-- ----------------------------------------------------------------------------
+-- Settings and localization
+-- ----------------------------------------------------------------------------
+
+--- Stops tracking and hides the meter, when the meter is no longer supported.
 HudElementOverflowMeter._reset_display = function (self)
     self._estimator:reset()
     mod._disable_all_pulses()
@@ -1141,6 +1340,12 @@ HudElementOverflowMeter._reset_display = function (self)
     end
 end
 
+--- Applies the display settings to both widgets.
+-- Positions each box unless Custom HUD manages it, scales it by the Custom HUD size or the
+-- `Meter size` setting (clamped to 25 to 300 %), applies the opacity and the meter style's
+-- layout, sets the averaging window, resets the estimator when the rate unit changed, and
+-- refreshes every text.
+-- tab: settings cached settings
 HudElementOverflowMeter._apply_display_settings = function (self, settings)
     self._applied_settings_version = mod._settings_version
 
@@ -1293,6 +1498,7 @@ HudElementOverflowMeter._apply_display_settings = function (self, settings)
     summary_widget.dirty = true
 end
 
+--- Caches the fixed texts and writes the titles and summary labels, for the current archetype.
 HudElementOverflowMeter._refresh_localization = function (self)
     local loc = self._loc
 

@@ -1,3 +1,14 @@
+--- Optional integration with the Power_DI statistics mod.
+-- Registers a Power_DI datasource, a dataset over it and a pivot table report, so the totals can
+-- be browsed in Power_DI next to its own session data. Each publish writes one row per player
+-- (with player, archetype, whether the values are local or a teammate's, and the five totals)
+-- into the datasource's table for the current session. Every Power_DI call is protected, and a
+-- failed registration only leaves a log line.
+--
+-- Explicit module loaded by `OverflowMeter.lua`; it registers itself with the snapshot and
+-- becomes active in `setup` once Power_DI is found.
+-- module: OverflowMeter_power_di
+-- author: LucLeto
 local mod = get_mod("OverflowMeter")
 local Snapshot = mod._snapshot
 
@@ -10,27 +21,34 @@ local type = type
 
 local POWER_DI_MOD_NAME = "Power_DI"
 
+--- Names of the datasource, dataset and report registered with Power_DI.
 local DATASOURCE_NAME = "OverflowMeter_Summary"
 local DATASET_NAME = "Overflow Meter mission summary"
 local REPORT_NAME = "Overflow Meter"
 
+--- The snapshot adapter.
 local Adapter = {
     name = POWER_DI_MOD_NAME,
     active = false
 }
 
+--- Registration state, the datasource's session table and each account's row index in it.
 local registered = false
 local datasource_getter = nil
 local session_rows = nil
 local session_table = nil
 local row_index = {}
 
+--- Dataset function: the dataset is the datasource's rows as they are.
+-- tab: data Power_DI dataset builder
 local function _dataset_function(data)
     data:append_dataset("OverflowMeter_Summary"):next(function ()
         data:complete_dataset()
     end)
 end
 
+--- Fills an entry's player name and character id from the mission's player list.
+-- tab: entry snapshot entry
 local function _resolve_identity(entry)
     local player_manager = Managers.player
     local players = player_manager and player_manager.players and player_manager:players()
@@ -56,6 +74,9 @@ local function _resolve_identity(entry)
     end
 end
 
+--- Registers the datasource, the dataset and the report with Power_DI.
+-- tab: pdi Power_DI mod
+-- treturn: bool whether the datasource and dataset were registered
 local function _register(pdi)
     local ok, getter = pcall(pdi.datasources.register_datasource, {
         name = DATASOURCE_NAME,
@@ -124,6 +145,7 @@ local function _register(pdi)
     return true
 end
 
+--- Finds Power_DI and registers with it, once.
 Adapter.setup = function ()
     if registered then
         Adapter.active = datasource_getter ~= nil
@@ -144,6 +166,8 @@ Adapter.setup = function ()
     Adapter.active = _register(pdi)
 end
 
+--- Fetches the datasource's table for the current session before a publish.
+-- A new session table starts new row indices.
 Adapter.prepare = function ()
     session_rows = nil
 
@@ -170,6 +194,8 @@ Adapter.prepare = function ()
     session_rows = rows
 end
 
+--- Writes an entry as its player's row, adding the row on first publish.
+-- tab: entry snapshot entry; ignored without an archetype
 Adapter.publish = function (entry)
     local rows = session_rows
 
@@ -204,6 +230,7 @@ Adapter.publish = function (entry)
     row.efficiency = entry.efficiency
 end
 
+--- Forgets the session table and the row indices for a new mission.
 Adapter.reset = function ()
     session_rows = nil
     session_table = nil

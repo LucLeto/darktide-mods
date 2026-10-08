@@ -1,3 +1,14 @@
+--- Optional integration with the VT2 Scoreboard mod.
+-- The VT2 Scoreboard keeps its row list in `registered_rows` and rebuilds it in `collect_rows`,
+-- so this adapter inserts our enabled rows into that list (in metric order) after every rebuild
+-- and removes the disabled ones. Each row keeps its own data table across rebuilds, and values
+-- are written straight into the cells. Opening the VT2 Scoreboard view flushes the snapshot first,
+-- so it never shows stale totals.
+--
+-- Explicit module loaded by `OverflowMeter.lua`; it registers itself with the snapshot and
+-- becomes active in `setup` once the VT2 Scoreboard is found.
+-- module: OverflowMeter_vt2_scoreboard
+-- author: LucLeto
 local mod = get_mod("OverflowMeter")
 local Snapshot = mod._snapshot
 
@@ -12,6 +23,7 @@ local VT2_MOD_NAME = "vt2_scoreboard"
 local METRICS = Snapshot.METRICS
 local METRIC_COUNT = Snapshot.METRIC_COUNT
 
+--- Per-metric entry fields, and the metric position of each of our row names.
 local FIELDS = {}
 
 local OUR_ROW_ORDER = {}
@@ -21,26 +33,35 @@ for i = 1, METRIC_COUNT do
     OUR_ROW_ORDER[METRICS[i].row] = i
 end
 
+--- The snapshot adapter.
 local Adapter = {
     name = VT2_MOD_NAME,
     active = false
 }
 
+--- Row iteration that keeps the latest total as the value and scores only its increase.
 local ITERATION_DIFF = {
     value = function (new_value, old_value)
         return new_value, math_max(new_value - old_value, 0)
     end
 }
 
+--- Localized row labels, captured in `setup`.
 local labels = {}
 
+--- Data table per row name (kept across row rebuilds) and the rows looked up by `prepare`.
 local row_data = {}
 local rows_cache = {}
 
+--- The VT2 Scoreboard mod, whether its hooks are installed, and whether a publish can write.
 local vt2_mod = nil
 local hooks_installed = false
 local ready = false
 
+--- Returns the index of a row by name.
+-- tab: rows row list
+-- string: name row name
+-- treturn: ?int
 local function _row_index(rows, name)
     for i = 1, #rows do
         if rows[i].name == name then
@@ -49,6 +70,11 @@ local function _row_index(rows, name)
     end
 end
 
+--- Returns where to insert a row so our rows keep the metric order; after the last of our
+-- rows that comes before it, or at the end.
+-- tab: rows row list
+-- int: metric_position position of the row's metric
+-- treturn: int
 local function _insert_position(rows, metric_position)
     local after = #rows
 
@@ -63,6 +89,8 @@ local function _insert_position(rows, metric_position)
     return after + 1
 end
 
+--- Inserts the enabled rows that are missing and removes the disabled ones.
+-- tab: vt2 VT2 Scoreboard mod
 local function _sync_rows(vt2)
     local rows = vt2.registered_rows
 
@@ -96,6 +124,7 @@ local function _sync_rows(vt2)
     end
 end
 
+--- Finds the VT2 Scoreboard, adds our rows and installs its hooks once.
 Adapter.setup = function ()
     local vt2 = get_mod(VT2_MOD_NAME)
 
@@ -124,10 +153,12 @@ Adapter.setup = function ()
 
     hooks_installed = true
 
+    -- The VT2 Scoreboard rebuilt its row list; put our rows back in.
     mod:hook_safe(vt2, "collect_rows", function (self)
         _sync_rows(self)
     end)
 
+    -- Flush the snapshot before the view opens, so it shows the current totals.
     if vt2.show_vt2_scoreboard_view then
         mod:hook(vt2, "show_vt2_scoreboard_view", function (func, ...)
             Snapshot.flush()
@@ -137,6 +168,7 @@ Adapter.setup = function ()
     end
 end
 
+--- Re-syncs the rows after a row checkbox changed.
 Adapter.refresh = function ()
     local vt2 = vt2_mod
 
@@ -147,6 +179,7 @@ Adapter.refresh = function ()
     _sync_rows(vt2)
 end
 
+--- Looks up the enabled rows once before a publish.
 Adapter.prepare = function ()
     ready = false
 
@@ -169,6 +202,8 @@ Adapter.prepare = function ()
     ready = any
 end
 
+--- Writes an entry's values into the cells of the enabled rows.
+-- tab: entry snapshot entry
 Adapter.publish = function (entry)
     if not ready then
         return
@@ -202,6 +237,7 @@ Adapter.publish = function (entry)
     end
 end
 
+--- Clears every row's cells for a new mission.
 Adapter.reset = function ()
     ready = false
 

@@ -9,9 +9,4 @@ return {
         })
     end,
     packages = {},
-    load_after = {
-        "dmf",
-    },
-    version = "1.5.0",
-    mod_id = "1095",
 }

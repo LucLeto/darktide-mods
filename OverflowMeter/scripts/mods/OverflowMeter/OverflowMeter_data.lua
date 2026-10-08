@@ -1,4 +1,29 @@
+--- Overflow Meter's DMF mod data; the mod description and the whole settings menu.
+-- The returned table names the mod and declares every option widget: the live meter group
+-- (style, texts, rate unit and averaging window, position, size and opacity), the mission summary
+-- group (hold keybind, permanent display, end-of-mission chat line, one checkbox per scoreboard
+-- row, summary sharing and the panel position), and the Session Stats checkbox, whose three row
+-- dropdowns DMF hides while it is off. Every widget names its tooltip explicitly.
+--
+-- Loaded by DMF as `mod_data`, as declared in `OverflowMeter.mod`. The defaults are mirrored in
+-- the settings cache of `OverflowMeter.lua`; keep both in sync.
+-- module: OverflowMeter_data
+-- author: LucLeto
 local mod = get_mod("OverflowMeter")
+
+--- Returns a new option list for a Session Stats row dropdown.
+-- DMF localizes option texts in place, so every dropdown needs its own table.
+-- treturn: tab dropdown options
+local function _session_stats_row_options()
+    return {
+        { text = "session_stats_metric_off", value = "off" },
+        { text = "session_stats_metric_generated", value = "generated" },
+        { text = "session_stats_metric_replenished", value = "replenished" },
+        { text = "session_stats_metric_overflowed", value = "overflowed" },
+        { text = "session_stats_metric_shared", value = "shared" },
+        { text = "session_stats_metric_efficiency", value = "efficiency" }
+    }
+end
 
 return {
     name = mod:localize("mod_name"),
@@ -121,6 +146,7 @@ return {
                 type = "group",
                 tooltip = "mission_summary_group_tooltip",
                 sub_widgets = {
+                    -- Calls `mod.hold_mission_summary` with the pressed state on press and release.
                     {
                         setting_id = "summary_keybind",
                         type = "keybind",
@@ -195,6 +221,36 @@ return {
                         decimals_number = 0,
                         step_size_value = 10,
                         tooltip = "summary_y_tooltip"
+                    }
+                }
+            },
+            -- A checkbox with sub-widgets works as a group that can be switched off.
+            {
+                setting_id = "session_stats_rows",
+                type = "checkbox",
+                default_value = true,
+                tooltip = "session_stats_rows_tooltip",
+                sub_widgets = {
+                    {
+                        setting_id = "session_stats_row_1",
+                        type = "dropdown",
+                        default_value = "generated",
+                        tooltip = "session_stats_row_tooltip",
+                        options = _session_stats_row_options()
+                    },
+                    {
+                        setting_id = "session_stats_row_2",
+                        type = "dropdown",
+                        default_value = "shared",
+                        tooltip = "session_stats_row_tooltip",
+                        options = _session_stats_row_options()
+                    },
+                    {
+                        setting_id = "session_stats_row_3",
+                        type = "dropdown",
+                        default_value = "efficiency",
+                        tooltip = "session_stats_row_tooltip",
+                        options = _session_stats_row_options()
                     }
                 }
             }

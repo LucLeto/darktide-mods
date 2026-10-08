@@ -1,3 +1,15 @@
+--- Optional integration with Scores (formerly Scoreboard II).
+-- Registers our enabled rows with the host through its own row API, keeps them registered across
+-- its `collect_scoreboard_rows` rebuilds, and writes each player's totals with `set_row_value`.
+-- The host keeps our rows hidden; on host versions verified to work, the `get_rows_in_groups`
+-- hook flushes the snapshot and moves our hidden rows into view, right after the first anchor
+-- row it finds. On unverified versions the rows stay registered but
+-- hidden, and a log line says so.
+--
+-- Explicit module loaded by `OverflowMeter.lua`; it registers itself with the snapshot and
+-- becomes active in `setup` once a host is found.
+-- module: OverflowMeter_scores
+-- author: LucLeto
 local mod = get_mod("OverflowMeter")
 local Snapshot = mod._snapshot
 
@@ -14,6 +26,7 @@ local HOST_MOD_NAMES = {
     "scoreboard-ii"
 }
 
+--- Host versions whose row promotion has been verified, by host mod id.
 local KNOWN_GOOD_VERSIONS = {
     scores = {
         ["1.0"] = true
@@ -23,6 +36,7 @@ local KNOWN_GOOD_VERSIONS = {
     }
 }
 
+--- Host rows our rows are placed after, in order of preference.
 local ANCHOR_ROWS = {
     "coherency_efficiency",
     "ammo_collected",
@@ -32,6 +46,7 @@ local ANCHOR_ROWS = {
 local METRICS = Snapshot.METRICS
 local METRIC_COUNT = Snapshot.METRIC_COUNT
 
+--- Per-metric entry fields, and the metric position of each of our row names.
 local FIELDS = {}
 
 local OUR_ROW_ORDER = {}
@@ -41,11 +56,13 @@ for i = 1, METRIC_COUNT do
     OUR_ROW_ORDER[METRICS[i].row] = i
 end
 
+--- The snapshot adapter.
 local Adapter = {
     name = "scores",
     active = false
 }
 
+--- Data table per row name and the row template registered for each metric.
 local row_data = {}
 local templates = {}
 
@@ -63,11 +80,17 @@ for i = 1, METRIC_COUNT do
     }
 end
 
+--- The host mod, whether its hooks are installed, whether a publish can write, and scratch
+-- slots for the rows being promoted.
 local sb_mod = nil
 local hooks_installed = false
 local ready = false
 local promoted = {}
 
+--- Returns the index of a row or template by name.
+-- tab: list row or template list
+-- string: name row name
+-- treturn: ?int
 local function _template_index(list, name)
     for i = 1, #list do
         if list[i].name == name then
@@ -76,6 +99,9 @@ local function _template_index(list, name)
     end
 end
 
+--- Registers the enabled rows with the host and unregisters the disabled ones.
+-- Rows the host already knows are claimed for this mod.
+-- tab: sb host mod
 local function _ensure_rows(sb)
     local row_templates = sb.scoreboard_rows
     local registered = sb.registered_scoreboard_rows
@@ -125,6 +151,10 @@ local function _ensure_rows(sb)
     end
 end
 
+--- Returns the position of a row by name.
+-- tab: rows row list
+-- string: name row name
+-- treturn: ?int
 local function _row_position(rows, name)
     for i = 1, #rows do
         if rows[i].name == name then
@@ -133,6 +163,9 @@ local function _row_position(rows, name)
     end
 end
 
+--- Makes our rows the host hid visible again and moves them, in metric order, after the first
+-- anchor row found (or to the end).
+-- ?tab: sorted the host's rows in groups; only the first group is changed
 local function _promote_rows(sorted)
     local rows = sorted and sorted[1]
 
@@ -182,6 +215,9 @@ local function _promote_rows(sorted)
     end
 end
 
+--- Returns the first installed host that offers the row API.
+-- treturn: ?tab host mod
+-- treturn: ?string host mod id
 local function _find_host()
     for i = 1, #HOST_MOD_NAMES do
         local name = HOST_MOD_NAMES[i]
@@ -193,6 +229,7 @@ local function _find_host()
     end
 end
 
+--- Finds the host, registers our rows and installs its hooks once.
 Adapter.setup = function ()
     local sb, host_name = _find_host()
 
@@ -214,6 +251,8 @@ Adapter.setup = function ()
 
     hooks_installed = true
 
+    -- The host rebuilt its rows. Re-register ours after a fresh collection, and claim them for
+    -- this mod when it loads saved rows.
     mod:hook(sb, "collect_scoreboard_rows", function (func, self, loaded_rows)
         local entries = func(self, loaded_rows)
 
@@ -245,6 +284,7 @@ Adapter.setup = function ()
         return
     end
 
+    -- The host is about to display its rows: flush the snapshot, then bring our rows into view.
     mod:hook(sb, "get_rows_in_groups", function (func, self, loaded_rows)
         Snapshot.flush()
 
@@ -256,6 +296,7 @@ Adapter.setup = function ()
     end)
 end
 
+--- Re-registers the rows after a row checkbox changed.
 Adapter.refresh = function ()
     local sb = sb_mod
 
@@ -266,10 +307,13 @@ Adapter.refresh = function ()
     _ensure_rows(sb)
 end
 
+--- Allows publishing while a host is known.
 Adapter.prepare = function ()
     ready = sb_mod ~= nil
 end
 
+--- Writes an entry's enabled metrics into the host's rows.
+-- tab: entry snapshot entry
 Adapter.publish = function (entry)
     local sb = sb_mod
 
@@ -289,6 +333,7 @@ Adapter.publish = function (entry)
     end
 end
 
+--- Clears every row's data for a new mission.
 Adapter.reset = function ()
     ready = false
 

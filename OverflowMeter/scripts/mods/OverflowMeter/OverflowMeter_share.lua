@@ -1,3 +1,19 @@
+--- Shares mission totals between Overflow Meter users through the party presence.
+-- Each client publishes its own totals as a small JSON payload under one presence key,
+-- `overflow_meter_summary`, which a hook on `PresenceEntryMyself.create_key_values` adds to the
+-- local presence. It reads the same key from every party member's presence, and a teammate's
+-- totals reach the snapshot as a remote entry, so the scoreboards can fill that teammate's column.
+--
+-- `mod.update` drives it at most every 2 s while in a mission: the payload is republished when
+-- the totals change and once more when the mission ends, and the party is read on the same
+-- interval and again when the end-of-round screen opens. Payloads are size-capped (250 bytes out,
+-- 1 KiB in) and decoded defensively.
+--
+-- Explicit module loaded by `OverflowMeter.lua` and stored as `mod._share`. Turning off
+-- `share_mission_summary` withdraws the published payload; teammates' payloads are still read.
+-- module: OverflowMeter_share
+-- alias: Share
+-- author: LucLeto
 local mod = get_mod("OverflowMeter")
 local Stats = mod._stats
 local Snapshot = mod._snapshot
@@ -10,18 +26,29 @@ local pcall = pcall
 local tostring = tostring
 local type = type
 
+-- ----------------------------------------------------------------------------
+-- Constants and state
+-- ----------------------------------------------------------------------------
+
+--- Presence key and payload format version.
 local KEY = "overflow_meter_summary"
 local PAYLOAD_VERSION = 1
 
+--- Size caps for the published payload and for a payload read from a teammate.
 local MAX_PUBLISH_BYTES = 250
 local MAX_INBOUND_BYTES = 1024
 
+--- Seconds between publishing and reading rounds.
 local PUBLISH_INTERVAL = 2
 
-local DEBUG_MEMBERS = true
+--- Logs the party members and whether each one publishes a summary, for debugging only.
+local DEBUG_MEMBERS = false
 
 local Share = {}
 
+--- Publishing state: whether the presence hook is installed, the payload currently published
+-- (`""` for none), the time to the next round, the statistics version last published, whether
+-- the mission-end payload went out, and the raw payload last seen per teammate account id.
 local hook_installed = false
 local my_encoded = nil
 local publish_timer = 0
@@ -30,6 +57,9 @@ local end_published = false
 local debug_logged = false
 local peer_raw = {}
 
+--- Reused payload table. The short keys keep the encoded summary small: `a` archetype,
+-- `g` generated, `r` replenished, `o` overflowed, `s` shared per ally, `st` shared with all
+-- allies and `e` efficiency in percent.
 local payload = {
     pv = PAYLOAD_VERSION,
     a = "",
@@ -41,6 +71,13 @@ local payload = {
     e = 0
 }
 
+-- ----------------------------------------------------------------------------
+-- Encoding and presence
+-- ----------------------------------------------------------------------------
+
+--- Encodes the local totals as the payload.
+-- treturn: ?string JSON payload, or nil when sharing is off, nothing was generated yet, or the
+-- payload would exceed the size cap
 local function _encode_summary()
     if not cjson or not mod._settings.share_mission_summary then
         return nil
@@ -69,6 +106,9 @@ local function _encode_summary()
     return encoded
 end
 
+--- Decodes a teammate's payload.
+-- ?string: raw raw presence value
+-- treturn: ?tab decoded payload, or nil for anything empty, oversized or malformed
 local function _decode_summary(raw)
     if type(raw) ~= "string" or raw == "" or #raw > MAX_INBOUND_BYTES or not cjson then
         return nil
@@ -83,6 +123,7 @@ local function _decode_summary(raw)
     return decoded
 end
 
+--- Asks the presence manager to republish the local presence with the summary key.
 local function _push_presence()
     local presence_manager = Managers.presence
 
@@ -93,6 +134,8 @@ local function _push_presence()
     pcall(presence_manager._update_my_presence, presence_manager, { [KEY] = true })
 end
 
+--- Publishes a payload, pushing the presence only when it changed.
+-- string: encoded payload, or `""` to withdraw it
 local function _set_published(encoded)
     if encoded == my_encoded then
         return
@@ -103,6 +146,13 @@ local function _set_published(encoded)
     _push_presence()
 end
 
+-- ----------------------------------------------------------------------------
+-- Party members
+-- ----------------------------------------------------------------------------
+
+--- Returns a party member's presence entry.
+-- ?tab: member party member
+-- treturn: ?tab presence entry
 local function _member_presence(member)
     if not member or type(member.presence) ~= "function" then
         return nil
@@ -117,6 +167,9 @@ local function _member_presence(member)
     return presence
 end
 
+--- Returns whether a presence entry is the local player's own.
+-- tab: presence presence entry
+-- treturn: bool
 local function _is_myself(presence)
     if type(presence.is_myself) ~= "function" then
         return false
@@ -127,6 +180,9 @@ local function _is_myself(presence)
     return ok and myself == true
 end
 
+--- Returns the raw summary value from a presence entry.
+-- tab: presence presence entry
+-- treturn: ?string raw payload
 local function _raw_member(presence)
     if type(presence._key_value_string) ~= "function" then
         return nil
@@ -141,10 +197,15 @@ local function _raw_member(presence)
     return raw
 end
 
+--- Returns the decoded summary from a presence entry.
+-- tab: presence presence entry
+-- treturn: ?tab decoded payload
 local function _read_member(presence)
     return _decode_summary(_raw_member(presence))
 end
 
+--- Returns every member of the local player's Immaterium party, the local player included.
+-- treturn: ?tab array of party members
 local function _members()
     local party_manager = Managers.party_immaterium
 
@@ -161,6 +222,8 @@ local function _members()
     return members
 end
 
+--- Returns the game mode manager while in a mission, nil in the hub or without a game mode.
+-- treturn: ?tab game mode manager
 local function _in_mission()
     local state_managers = Managers.state
     local game_mode_manager = state_managers and state_managers.game_mode
@@ -178,6 +241,9 @@ local function _in_mission()
     return game_mode_manager
 end
 
+--- Returns whether the mission has ended (outro, done, or end conditions met).
+-- tab: game_mode_manager game mode manager
+-- treturn: bool
 local function _mission_ended(game_mode_manager)
     if game_mode_manager.game_mode_state then
         local game_mode_state = game_mode_manager:game_mode_state()
@@ -194,6 +260,8 @@ local function _mission_ended(game_mode_manager)
     return false
 end
 
+--- Logs every party member and mission player, for `DEBUG_MEMBERS` only.
+-- string: tag label for the log lines
 local function _log_members(tag)
     local members = _members()
 
@@ -233,6 +301,9 @@ local function _log_members(tag)
     end
 end
 
+--- Reads every teammate's payload into the snapshot and publishes it to the scoreboards.
+-- A payload is only decoded when its raw value changed, unless forced.
+-- bool: force reread every payload and republish even without changes
 local function _push_peers(force)
     local members = _members()
 
@@ -269,6 +340,12 @@ local function _push_peers(force)
     end
 end
 
+-- ----------------------------------------------------------------------------
+-- Interface
+-- ----------------------------------------------------------------------------
+
+--- Installs the presence hook that adds the payload to the local presence, once.
+-- Called from `mod.on_all_mods_loaded`; without `PresenceEntryMyself` sharing stays off.
 Share.setup = function ()
     if hook_installed then
         return
@@ -284,6 +361,7 @@ Share.setup = function ()
 
     hook_installed = true
 
+    -- Adds the payload to the local presence's key values whenever the key is requested.
     mod:hook(presence_class, "create_key_values", function (func, self, white_list)
         local key_values = func(self, white_list)
 
@@ -295,6 +373,8 @@ Share.setup = function ()
     end)
 end
 
+--- Applies the sharing setting: republishes on the next round when sharing is on, withdraws the
+-- payload when it is off or the mod is disabled.
 Share.refresh = function ()
     if mod:is_enabled() and mod._settings.share_mission_summary then
         published_version = nil
@@ -305,6 +385,7 @@ Share.refresh = function ()
     _set_published("")
 end
 
+--- Starts a new mission: withdraws the payload and forgets every teammate's payload.
 Share.reset = function ()
     publish_timer = 0
     published_version = nil
@@ -318,12 +399,17 @@ Share.reset = function ()
     _set_published("")
 end
 
+--- Withdraws the payload and resets, when the mod is disabled or unloaded.
 Share.teardown = function ()
     _set_published("")
 
     Share.reset()
 end
 
+--- Runs one publishing and reading round every `PUBLISH_INTERVAL` seconds while in a mission.
+-- Republishes when the totals changed, publishes the final totals and flushes the snapshot once
+-- the mission ends, and reads the teammates' payloads.
+-- number: dt frame delta time
 Share.update = function (dt)
     if not hook_installed then
         return
@@ -367,6 +453,8 @@ Share.update = function (dt)
 end
 
 
+--- Rereads every teammate's payload and republishes the snapshot, from the end-of-round screen
+-- and when a scoreboard collects its values.
 Share.push_peers = function ()
     if DEBUG_MEMBERS then
         _log_members("end_view")
