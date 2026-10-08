@@ -1,0 +1,10 @@
+{
+  "name": "Boss Health Fix",
+  "description": "Prevents a boss health bar crash (\"Cannot access property current_health_percent on destroyed object of type HuskHealthExtension\") that can occur on non-host clients when several bosses die or despawn in quick succession. Stale entries are removed before the vanilla boss health bar updates; living bosses and the vanilla bars are unchanged.",
+  "version": "1.0.0",
+  "author": "LucLeto",
+  "source": "https://github.com/LucLeto/darktide-mods-boss-health-fix",
+  "funding": {
+    "kofi": "https://ko-fi.com/lucleto"
+  }
+}

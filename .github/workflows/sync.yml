@@ -32,7 +32,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git add -- Radar IconBrowser OverflowMeter ShowCnJaKoGlyphsPlus PerfectThrust LICENSES SOURCES.md
+          git add -- Radar IconBrowser OverflowMeter ShowCnJaKoGlyphsPlus PerfectThrust BossHealthFix LICENSES SOURCES.md
           if git diff --cached --quiet; then
             echo "No upstream changes; no synchronization commit needed."
             exit 0

@@ -76,8 +76,9 @@ sync_mod 'Icon Browser' 'LucLeto/darktide-mods-icon-browser' 'IconBrowser'
 sync_mod 'Overflow Meter' 'LucLeto/darktide-mods-overflow-meter' 'OverflowMeter'
 sync_mod 'Show CJK Glyphs Plus' 'LucLeto/darktide-mods-show-cjk-glyphs-plus' 'ShowCnJaKoGlyphsPlus'
 sync_mod 'Perfect Thrust' 'LucLeto/darktide-mods-perfect-thrust' 'PerfectThrust'
+sync_mod 'Boss Health Fix' 'LucLeto/darktide-mods-boss-health-fix' 'BossHealthFix'
 
-generated_directories=(Radar IconBrowser OverflowMeter ShowCnJaKoGlyphsPlus PerfectThrust LICENSES)
+generated_directories=(Radar IconBrowser OverflowMeter ShowCnJaKoGlyphsPlus PerfectThrust BossHealthFix LICENSES)
 for directory in "${generated_directories[@]}"; do
   if [[ -L "$repository_root/$directory" ]]; then
     echo "Error: refusing to replace symlink $directory/." >&2
