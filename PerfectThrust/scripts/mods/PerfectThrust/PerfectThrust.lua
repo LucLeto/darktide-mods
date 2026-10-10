@@ -3,7 +3,8 @@
 -- and `PerfectThrust_localization.lua` are loaded by DMF from the same declaration.
 --
 -- Caches the settings in `mod._settings` and bumps `mod._settings_version` on every change, so
--- the HUD element re-applies them only when needed. Loads the tracker
+-- the HUD element re-applies them only when needed; on load it first folds the removed opacity
+-- setting of earlier versions into the colour settings' alpha, once. Loads the tracker
 -- (`PerfectThrust_tracker.lua`) as `mod._tracker` and feeds it from `hook_safe` hooks on the
 -- melee windup actions, which only observe the game: no input, timing or buff is changed.
 -- Registers the ring HUD element (`ui/PerfectThrust_hud_element.lua`).
@@ -18,6 +19,7 @@ mod.version = mod.get_metadata and mod:get_metadata("version") or "unknown"
 -- ----------------------------------------------------------------------------
 
 --- Cached setting values by setting id, initialised with the defaults from `PerfectThrust_data.lua`.
+-- Colour settings hold DMF's `{ a, r, g, b }` tables; they are only read, never written.
 local settings = {
     display_mode = "progress",
     timing_mode = "predicted",
@@ -25,8 +27,11 @@ local settings = {
     ring_thickness = 3,
     offset_x = 0,
     offset_y = 0,
-    ring_opacity = 100,
     ready_pulse = true,
+    unfilled_color = { 80, 70, 82, 86 },
+    charging_color = { 235, 240, 190, 90 },
+    ready_color = { 255, 120, 225, 140 },
+    ready_pulse_color = { 255, 120, 225, 140 },
     debug_logging = false
 }
 
@@ -38,8 +43,11 @@ local SETTING_IDS = {
     "ring_thickness",
     "offset_x",
     "offset_y",
-    "ring_opacity",
     "ready_pulse",
+    "unfilled_color",
+    "charging_color",
+    "ready_color",
+    "ready_pulse_color",
     "debug_logging"
 }
 
@@ -53,6 +61,44 @@ end
 --- Shared settings cache, and a counter bumped on every change that the HUD element compares against.
 mod._settings = settings
 mod._settings_version = 0
+
+--- Colour setting ids, whose alpha took over from the removed `ring_opacity` setting.
+local COLOR_SETTING_IDS = {
+    "unfilled_color",
+    "charging_color",
+    "ready_color",
+    "ready_pulse_color"
+}
+
+--- Folds the removed `ring_opacity` setting into the alpha of every colour setting, once.
+-- Earlier versions multiplied each state's alpha by `ring_opacity`; the colour settings now hold
+-- that alpha themselves. DMF stores the colour defaults, which carry the old state alphas, before
+-- this script runs, so an updating player's ring keeps exactly its previous look. The old key is
+-- deleted afterwards, so later starts do not migrate again; new installs never have it.
+local function migrate_ring_opacity()
+    local ring_opacity = mod:get("ring_opacity")
+
+    if ring_opacity == nil then
+        return
+    end
+
+    if type(ring_opacity) == "number" and ring_opacity ~= 100 then
+        local opacity = ring_opacity / 100
+
+        for i = 1, #COLOR_SETTING_IDS do
+            local setting_id = COLOR_SETTING_IDS[i]
+            local color = mod:get(setting_id)
+
+            if type(color) ~= "table" or type(color[1]) ~= "number" then
+                color = settings[setting_id]
+            end
+
+            mod:set(setting_id, { math.floor(color[1] * opacity), color[2], color[3], color[4] })
+        end
+    end
+
+    mod:set("ring_opacity", nil)
+end
 
 --- Reads every cached setting from DMF and bumps the settings version.
 -- A setting DMF returns nil for keeps its current value.
@@ -69,6 +115,7 @@ local function refresh_settings()
     mod._settings_version = mod._settings_version + 1
 end
 
+migrate_ring_opacity()
 refresh_settings()
 
 --- DMF callback for a changed setting.

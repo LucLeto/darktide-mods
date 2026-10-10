@@ -1,7 +1,10 @@
 --- Perfect Thrust's DMF mod data; the mod description and the settings menu.
 -- The returned table names the mod, makes it togglable and declares one `Charge indicator`
 -- group: display mode, READY timing, ring size, thickness, horizontal and vertical offset,
--- opacity, READY pulse and debug output. Every option has a `<setting_id>_tooltip`.
+-- READY pulse, the unfilled, charging, READY and READY pulse colours and debug output. Every
+-- option has a `<setting_id>_tooltip`. Colours are DMF colour pickers with alpha, stored as
+-- `{ a, r, g, b }`; their alpha replaces the opacity setting of earlier versions, which
+-- `PerfectThrust.lua` migrates once.
 --
 -- Loaded by DMF as `mod_data`, as declared in `PerfectThrust.mod`. The defaults here must match
 -- the `settings` table in `PerfectThrust.lua`, which caches the values at runtime.
@@ -77,19 +80,38 @@ return {
                         tooltip = "offset_y_tooltip"
                     },
                     {
-                        setting_id = "ring_opacity",
-                        type = "numeric",
-                        default_value = 100,
-                        range = { 20, 100 },
-                        decimals_number = 0,
-                        step_size_value = 5,
-                        tooltip = "ring_opacity_tooltip"
-                    },
-                    {
                         setting_id = "ready_pulse",
                         type = "checkbox",
                         default_value = true,
                         tooltip = "ready_pulse_tooltip"
+                    },
+                    {
+                        setting_id = "unfilled_color",
+                        type = "color",
+                        default_value = { 80, 70, 82, 86 }, -- ARGB
+                        has_alpha = true,
+                        tooltip = "unfilled_color_tooltip"
+                    },
+                    {
+                        setting_id = "charging_color",
+                        type = "color",
+                        default_value = { 235, 240, 190, 90 }, -- ARGB
+                        has_alpha = true,
+                        tooltip = "charging_color_tooltip"
+                    },
+                    {
+                        setting_id = "ready_color",
+                        type = "color",
+                        default_value = { 255, 120, 225, 140 }, -- ARGB
+                        has_alpha = true,
+                        tooltip = "ready_color_tooltip"
+                    },
+                    {
+                        setting_id = "ready_pulse_color",
+                        type = "color",
+                        default_value = { 255, 120, 225, 140 }, -- ARGB, the READY colour
+                        has_alpha = true,
+                        tooltip = "ready_pulse_color_tooltip"
                     },
                     {
                         setting_id = "debug_logging",
