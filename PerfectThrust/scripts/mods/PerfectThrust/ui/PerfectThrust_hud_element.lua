@@ -1,10 +1,12 @@
 --- The HUD element that draws Perfect Thrust's charge ring around the crosshair.
 -- A ring of square segments centred on the screen, like the game's crosshair. While a tracked
 -- windup runs, it asks the tracker each frame what to show: segments light up clockwise from the
--- top as the charge-dependent effects build, the whole ring switches to the READY colour at READY
--- with an optional short pulse, and it hides as soon as the tracker stops. All four colours come
--- from the settings (amber charging and green READY by default). Colours and geometry are only
--- rewritten when the lit count, the READY state, the pulse colour phase or the settings change.
+-- top while charging, the lit segments switch to the heavy attack available colour once a release
+-- counts as a heavy attack while charge-dependent effects still build, the whole ring switches to
+-- the READY colour at READY, each switch with an optional short pulse, and it hides as soon as the
+-- tracker stops. All five colours come from the settings (amber charging, lime heavy attack
+-- available and green READY by default). Colours and geometry are only rewritten when the lit
+-- count, the READY or heavy attack state, the pulse colour phase or the settings change.
 --
 -- Loaded by DMF from the `register_hud_element` call in `PerfectThrust.lua` and returned as the
 -- `HudElementPerfectThrust` class, with the crosshair's visibility groups and without the HUD
@@ -41,11 +43,12 @@ local DEG_TO_RAD = math_pi / 180
 local PULSE_DURATION = 0.25
 local PULSE_EXTRA_SCALE = 0.6
 
---- Default segment colours `{ a, r, g, b }` of the unlit, charging and READY states, matching the
--- colour settings' defaults. Used when a colour setting is invalid, `SEG_READY_COLOR` also for
--- the READY pulse colour; never written.
+--- Default segment colours `{ a, r, g, b }` of the unlit, charging, heavy attack available and
+-- READY states, matching the colour settings' defaults. Used when a colour setting is invalid,
+-- `SEG_READY_COLOR` also for the READY pulse colour; never written.
 local SEG_DIM_COLOR = { 80, 70, 82, 86 }
 local SEG_LIT_COLOR = { 235, 240, 190, 90 }
+local SEG_HEAVY_COLOR = { 229, 233, 255, 90 }
 local SEG_READY_COLOR = { 255, 120, 225, 140 }
 
 --- Style id and unit circle position of each segment, precomputed so the per-frame loops build no strings.
@@ -170,9 +173,11 @@ HudElementPerfectThrust.init = function (self, parent, draw_layer, start_scale)
     self._thickness = 3
     self._shown = false
     self._ready_seen = false
+    self._heavy_seen = false
     self._pulse_remaining = 0
     self._dim_color = { 0, 0, 0, 0 }
     self._lit_color = { 0, 0, 0, 0 }
+    self._heavy_color = { 0, 0, 0, 0 }
     self._ready_color = { 0, 0, 0, 0 }
     self._pulse_color = { 0, 0, 0, 0 }
 
@@ -183,18 +188,20 @@ HudElementPerfectThrust.init = function (self, parent, draw_layer, start_scale)
     self:_apply_display_settings(mod._settings)
 end
 
---- Forgets the last drawn lit count, READY state and pulse colour phase, so the next refresh
--- rewrites every segment colour.
+--- Forgets the last drawn lit count, READY and heavy attack state and pulse colour phase, so the
+-- next refresh rewrites every segment colour.
 HudElementPerfectThrust._clear_render_cache = function (self)
     self._last_lit = nil
     self._last_ready = nil
+    self._last_heavy = nil
     self._last_pulse = nil
 end
 
 --- Updates the ring from the tracker once per frame.
 -- Applies changed settings first. While no windup is tracked this costs one check; otherwise it
 -- refreshes the tracker, hides the ring when there is nothing to show (or, in `ready_only` mode,
--- until READY), starts the pulse the first time READY is reached and advances it.
+-- until READY), starts the pulse the first time the heavy attack becomes available before READY
+-- and the first time READY is reached, and advances it.
 -- number: dt frame delta time
 -- number: t time
 -- tab: ui_renderer active UI renderer
@@ -217,7 +224,7 @@ HudElementPerfectThrust.update = function (self, dt, t, ui_renderer, render_sett
         return
     end
 
-    local visible, fill, ready = Tracker.refresh(settings.timing_mode)
+    local visible, fill, ready, heavy_available = Tracker.refresh(settings.timing_mode)
 
     if visible and not ready and settings.display_mode == DISPLAY_MODE_READY_ONLY then
         visible = false
@@ -241,13 +248,20 @@ HudElementPerfectThrust.update = function (self, dt, t, ui_renderer, render_sett
 
     if ready and not self._ready_seen then
         self._ready_seen = true
+        self._heavy_seen = true
+
+        if settings.ready_pulse then
+            self._pulse_remaining = PULSE_DURATION
+        end
+    elseif heavy_available and not ready and not self._heavy_seen then
+        self._heavy_seen = true
 
         if settings.ready_pulse then
             self._pulse_remaining = PULSE_DURATION
         end
     end
 
-    self:_refresh_ring(fill, ready)
+    self:_refresh_ring(fill, ready, heavy_available)
 
     if self._pulse_remaining > 0 then
         local remaining = self._pulse_remaining - dt
@@ -262,33 +276,39 @@ HudElementPerfectThrust.update = function (self, dt, t, ui_renderer, render_sett
             self:_apply_geometry(1)
 
             -- Back to the READY colour on the frame the segments return to their normal size.
-            self:_refresh_ring(fill, ready)
+            self:_refresh_ring(fill, ready, heavy_available)
         end
     end
 end
 
---- Colours the segments for a fill, READY state and pulse colour phase, when any of them changed
--- since the last call.
+--- Colours the segments for a fill, READY and heavy attack state and pulse colour phase, when any
+-- of them changed since the last call.
 -- At READY every segment is lit in the READY colour, or in the READY pulse colour while the
--- READY pulse runs.
+-- READY pulse runs. Before READY the lit segments use the heavy attack available colour once the
+-- heavy attack is available, and the charging colour before that.
 -- number: fill fill fraction from 0 to 1
 -- bool: ready whether every tracked effect is at its maximum
-HudElementPerfectThrust._refresh_ring = function (self, fill, ready)
+-- ?bool: heavy_available whether the heavy attack is available while the effects still build
+HudElementPerfectThrust._refresh_ring = function (self, fill, ready, heavy_available)
     local lit = ready and SEGMENT_COUNT or _lit_count(fill)
     local pulse = ready and self._pulse_remaining > 0
+    local heavy = not ready and heavy_available or false
 
-    if lit == self._last_lit and ready == self._last_ready and pulse == self._last_pulse then
+    if lit == self._last_lit and ready == self._last_ready and heavy == self._last_heavy and pulse == self._last_pulse then
         return
     end
 
     self._last_lit = lit
     self._last_ready = ready
+    self._last_heavy = heavy
     self._last_pulse = pulse
 
     local lit_color
 
     if ready then
         lit_color = pulse and self._pulse_color or self._ready_color
+    elseif heavy then
+        lit_color = self._heavy_color
     else
         lit_color = self._lit_color
     end
@@ -338,6 +358,7 @@ end
 HudElementPerfectThrust._hide = function (self)
     self._shown = false
     self._ready_seen = false
+    self._heavy_seen = false
 
     if self._pulse_remaining > 0 then
         self._pulse_remaining = 0
@@ -367,6 +388,7 @@ HudElementPerfectThrust._apply_display_settings = function (self, settings)
 
     _copy_setting_color(self._dim_color, settings.unfilled_color, SEG_DIM_COLOR)
     _copy_setting_color(self._lit_color, settings.charging_color, SEG_LIT_COLOR)
+    _copy_setting_color(self._heavy_color, settings.heavy_available_color, SEG_HEAVY_COLOR)
     _copy_setting_color(self._ready_color, settings.ready_color, SEG_READY_COLOR)
     _copy_setting_color(self._pulse_color, settings.ready_pulse_color, SEG_READY_COLOR)
 

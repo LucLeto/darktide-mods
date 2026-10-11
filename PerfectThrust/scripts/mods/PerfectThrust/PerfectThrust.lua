@@ -23,6 +23,7 @@ mod.version = mod.get_metadata and mod:get_metadata("version") or "unknown"
 local settings = {
     display_mode = "progress",
     timing_mode = "predicted",
+    show_heavy_threshold = true,
     ring_radius = 32,
     ring_thickness = 3,
     offset_x = 0,
@@ -30,6 +31,7 @@ local settings = {
     ready_pulse = true,
     unfilled_color = { 80, 70, 82, 86 },
     charging_color = { 235, 240, 190, 90 },
+    heavy_available_color = { 229, 233, 255, 90 },
     ready_color = { 255, 120, 225, 140 },
     ready_pulse_color = { 255, 120, 225, 140 },
     debug_logging = false
@@ -39,6 +41,7 @@ local settings = {
 local SETTING_IDS = {
     "display_mode",
     "timing_mode",
+    "show_heavy_threshold",
     "ring_radius",
     "ring_thickness",
     "offset_x",
@@ -46,6 +49,7 @@ local SETTING_IDS = {
     "ready_pulse",
     "unfilled_color",
     "charging_color",
+    "heavy_available_color",
     "ready_color",
     "ready_pulse_color",
     "debug_logging"
@@ -66,6 +70,7 @@ mod._settings_version = 0
 local COLOR_SETTING_IDS = {
     "unfilled_color",
     "charging_color",
+    "heavy_available_color",
     "ready_color",
     "ready_pulse_color"
 }
