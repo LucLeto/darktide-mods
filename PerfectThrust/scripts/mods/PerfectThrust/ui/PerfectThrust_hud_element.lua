@@ -4,19 +4,26 @@
 -- top while charging, the lit segments switch to the heavy attack available colour once a release
 -- counts as a heavy attack while charge-dependent effects still build, the whole ring switches to
 -- the READY colour at READY, each switch with an optional short pulse, and it hides as soon as the
--- tracker stops. All five colours come from the settings (amber charging, lime heavy attack
--- available and green READY by default). Colours and geometry are only rewritten when the lit
--- count, the READY or heavy attack state, the pulse colour phase or the settings change.
+-- tracker stops. Without a tracked windup and with the `show_ads_blessings` setting on, it asks the
+-- aim tracker instead, which fills the same ring while aiming blessings build and reports READY
+-- once they are at their maximum. Each of the two rings has its own display mode, size, position,
+-- READY pulse and colours (amber charging, lime heavy attack available and green READY by
+-- default); the element applies the settings of the ring it shows. Colours and geometry are only
+-- rewritten when the lit count, the READY or heavy attack state, the pulse colour phase, the shown
+-- ring or the settings change.
 --
 -- Loaded by DMF from the `register_hud_element` call in `PerfectThrust.lua` and returned as the
 -- `HudElementPerfectThrust` class, with the crosshair's visibility groups and without the HUD
--- scale. Reads its settings from `mod._settings` and its state from `mod._tracker`.
+-- scale. Reads its settings from `mod._settings`, the setting ids of each ring from
+-- `mod._ring_settings` and its state from `mod._tracker` and `mod._aim_tracker`.
 -- classmod: HudElementPerfectThrust
 -- author: LucLeto
 local mod = get_mod("PerfectThrust")
 local UIWidget = require("scripts/managers/ui/ui_widget")
 local UIWorkspaceSettings = require("scripts/settings/ui/ui_workspace_settings")
 local Tracker = mod._tracker
+local AimTracker = mod._aim_tracker
+local RingSettings = mod._ring_settings
 
 local math_clamp = math.clamp
 local math_cos = math.cos
@@ -31,6 +38,16 @@ local math_sin = math.sin
 --- `display_mode` setting value that shows the ring only at READY.
 local DISPLAY_MODE_READY_ONLY = "ready_only"
 
+--- Sources of the shown ring: a tracked melee windup, or an aim with aiming blessings.
+local SOURCE_WINDUP = "windup"
+local SOURCE_AIM = "aim"
+
+--- Setting ids of each source's ring settings, by melee setting id.
+local RING_KEYS = {
+    [SOURCE_WINDUP] = RingSettings.keys(""),
+    [SOURCE_AIM] = RingSettings.keys(RingSettings.ADS_PREFIX)
+}
+
 --- Number of segments in the ring, the first one at the top and the rest clockwise.
 -- Fixed so the widget passes can be built once; the angle of segment `i` is
 -- `RING_START_DEG + (i - 1) * 360 / SEGMENT_COUNT` degrees, in screen space with y pointing down.
@@ -44,12 +61,12 @@ local PULSE_DURATION = 0.25
 local PULSE_EXTRA_SCALE = 0.6
 
 --- Default segment colours `{ a, r, g, b }` of the unlit, charging, heavy attack available and
--- READY states, matching the colour settings' defaults. Used when a colour setting is invalid,
+-- READY states, the colour settings' defaults. Used when a colour setting is invalid,
 -- `SEG_READY_COLOR` also for the READY pulse colour; never written.
-local SEG_DIM_COLOR = { 80, 70, 82, 86 }
-local SEG_LIT_COLOR = { 235, 240, 190, 90 }
-local SEG_HEAVY_COLOR = { 229, 233, 255, 90 }
-local SEG_READY_COLOR = { 255, 120, 225, 140 }
+local SEG_DIM_COLOR = RingSettings.default_value("unfilled_color")
+local SEG_LIT_COLOR = RingSettings.default_value("charging_color")
+local SEG_HEAVY_COLOR = RingSettings.default_value("heavy_available_color")
+local SEG_READY_COLOR = RingSettings.default_value("ready_color")
 
 --- Style id and unit circle position of each segment, precomputed so the per-frame loops build no strings.
 local SEGMENT_STYLE_IDS = {}
@@ -172,6 +189,7 @@ HudElementPerfectThrust.init = function (self, parent, draw_layer, start_scale)
     self._radius = 32
     self._thickness = 3
     self._shown = false
+    self._source = nil
     self._ready_seen = false
     self._heavy_seen = false
     self._pulse_remaining = 0
@@ -185,7 +203,7 @@ HudElementPerfectThrust.init = function (self, parent, draw_layer, start_scale)
 
     self._widgets_by_name.ring.content.visible = false
 
-    self:_apply_display_settings(mod._settings)
+    self:_apply_display_settings(mod._settings, RING_KEYS[SOURCE_WINDUP])
 end
 
 --- Forgets the last drawn lit count, READY and heavy attack state and pulse colour phase, so the
@@ -198,10 +216,14 @@ HudElementPerfectThrust._clear_render_cache = function (self)
 end
 
 --- Updates the ring from the tracker once per frame.
--- Applies changed settings first. While no windup is tracked this costs one check; otherwise it
--- refreshes the tracker, hides the ring when there is nothing to show (or, in `ready_only` mode,
--- until READY), starts the pulse the first time the heavy attack becomes available before READY
--- and the first time READY is reached, and advances it.
+-- A tracked windup always takes the ring; without one, the aim tracker is refreshed while the
+-- `show_ads_blessings` setting is on, which costs one component check while not aiming. With the
+-- setting off and no windup this costs one check, as before. It hides the ring when there is
+-- nothing to show (or, in that ring's `ready_only` mode, until READY), starts over as a new ring
+-- when the other tracker takes it or a shot restarts the aiming blessings after READY, applies the
+-- shown ring's settings when that ring or the settings changed, starts the pulse the first time
+-- the heavy attack becomes available before READY and the first time READY is reached, and
+-- advances it.
 -- number: dt frame delta time
 -- number: t time
 -- tab: ui_renderer active UI renderer
@@ -211,12 +233,21 @@ HudElementPerfectThrust.update = function (self, dt, t, ui_renderer, render_sett
     HudElementPerfectThrust.super.update(self, dt, t, ui_renderer, render_settings, input_service)
 
     local settings = mod._settings
+    local source, visible, fill, ready, heavy_available
 
-    if mod._settings_version ~= self._applied_settings_version then
-        self:_apply_display_settings(settings)
-    end
+    if Tracker.is_charging_heavy_attack() then
+        source = SOURCE_WINDUP
+        visible, fill, ready, heavy_available = Tracker.refresh(settings.timing_mode)
+    elseif settings.show_ads_blessings then
+        source = SOURCE_AIM
+        visible, fill, ready = AimTracker.refresh(self._parent:player_extensions())
+        heavy_available = false
+    else
+        -- Aim tracking was turned off: drop an aim that is still open.
+        if AimTracker.is_tracking() then
+            AimTracker.reset()
+        end
 
-    if not Tracker.is_charging_heavy_attack() then
         if self._shown then
             self:_hide()
         end
@@ -224,9 +255,9 @@ HudElementPerfectThrust.update = function (self, dt, t, ui_renderer, render_sett
         return
     end
 
-    local visible, fill, ready, heavy_available = Tracker.refresh(settings.timing_mode)
+    local keys = RING_KEYS[source]
 
-    if visible and not ready and settings.display_mode == DISPLAY_MODE_READY_ONLY then
+    if visible and not ready and settings[keys.display_mode] == DISPLAY_MODE_READY_ONLY then
         visible = false
     end
 
@@ -238,10 +269,21 @@ HudElementPerfectThrust.update = function (self, dt, t, ui_renderer, render_sett
         return
     end
 
+    -- A melee windup during an aim, or a shot after READY, starts a new ring in the same frame, so
+    -- no stale READY or pulse state carries over. A windup's READY never goes back.
+    if self._shown and (source ~= self._source or source == SOURCE_AIM and self._ready_seen and not ready) then
+        self:_hide()
+    end
+
+    if keys ~= self._applied_keys or mod._settings_version ~= self._applied_settings_version then
+        self:_apply_display_settings(settings, keys)
+    end
+
     local widget = self._widgets_by_name.ring
 
     if not self._shown then
         self._shown = true
+        self._source = source
         widget.content.visible = true
         widget.dirty = true
     end
@@ -250,13 +292,13 @@ HudElementPerfectThrust.update = function (self, dt, t, ui_renderer, render_sett
         self._ready_seen = true
         self._heavy_seen = true
 
-        if settings.ready_pulse then
+        if settings[keys.ready_pulse] then
             self._pulse_remaining = PULSE_DURATION
         end
     elseif heavy_available and not ready and not self._heavy_seen then
         self._heavy_seen = true
 
-        if settings.ready_pulse then
+        if settings[keys.ready_pulse] then
             self._pulse_remaining = PULSE_DURATION
         end
     end
@@ -354,9 +396,10 @@ HudElementPerfectThrust._apply_geometry = function (self, thickness_scale)
     widget.dirty = true
 end
 
---- Hides the ring, ends a running pulse and resets the per-windup display state.
+--- Hides the ring, ends a running pulse and resets the per-windup or per-aim display state.
 HudElementPerfectThrust._hide = function (self)
     self._shown = false
+    self._source = nil
     self._ready_seen = false
     self._heavy_seen = false
 
@@ -374,23 +417,26 @@ HudElementPerfectThrust._hide = function (self)
     widget.dirty = true
 end
 
---- Applies the position, radius, thickness and colour settings.
--- Records the settings version it applied, so `update` only calls it again after a change.
+--- Applies one ring's position, radius, thickness and colour settings.
+-- Records the settings version and the ring it applied, so `update` only calls it again after a
+-- change or when the other ring is shown.
 -- tab: settings `mod._settings`
-HudElementPerfectThrust._apply_display_settings = function (self, settings)
+-- tab: keys setting ids of the ring's settings, an entry of `RING_KEYS`
+HudElementPerfectThrust._apply_display_settings = function (self, settings, keys)
     self._applied_settings_version = mod._settings_version
+    self._applied_keys = keys
 
-    self:set_scenegraph_position("perfect_thrust_ring", settings.offset_x or 0, settings.offset_y or 0)
+    self:set_scenegraph_position("perfect_thrust_ring", settings[keys.offset_x] or 0, settings[keys.offset_y] or 0)
 
-    self._radius = settings.ring_radius or 32
-    self._thickness = settings.ring_thickness or 3
+    self._radius = settings[keys.ring_radius] or RingSettings.default_value("ring_radius")
+    self._thickness = settings[keys.ring_thickness] or RingSettings.default_value("ring_thickness")
     self._pulse_remaining = 0
 
-    _copy_setting_color(self._dim_color, settings.unfilled_color, SEG_DIM_COLOR)
-    _copy_setting_color(self._lit_color, settings.charging_color, SEG_LIT_COLOR)
-    _copy_setting_color(self._heavy_color, settings.heavy_available_color, SEG_HEAVY_COLOR)
-    _copy_setting_color(self._ready_color, settings.ready_color, SEG_READY_COLOR)
-    _copy_setting_color(self._pulse_color, settings.ready_pulse_color, SEG_READY_COLOR)
+    _copy_setting_color(self._dim_color, settings[keys.unfilled_color], SEG_DIM_COLOR)
+    _copy_setting_color(self._lit_color, settings[keys.charging_color], SEG_LIT_COLOR)
+    _copy_setting_color(self._heavy_color, settings[keys.heavy_available_color], SEG_HEAVY_COLOR)
+    _copy_setting_color(self._ready_color, settings[keys.ready_color], SEG_READY_COLOR)
+    _copy_setting_color(self._pulse_color, settings[keys.ready_pulse_color], SEG_READY_COLOR)
 
     self:_apply_geometry(1)
     self:_clear_render_cache()

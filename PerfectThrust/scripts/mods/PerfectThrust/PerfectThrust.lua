@@ -3,11 +3,15 @@
 -- and `PerfectThrust_localization.lua` are loaded by DMF from the same declaration.
 --
 -- Caches the settings in `mod._settings` and bumps `mod._settings_version` on every change, so
--- the HUD element re-applies them only when needed; on load it first folds the removed opacity
--- setting of earlier versions into the colour settings' alpha, once. Loads the tracker
+-- the HUD element re-applies them only when needed; the ring settings of the melee and the aiming
+-- ring come from `PerfectThrust_ring_settings.lua`, stored as `mod._ring_settings`. On load it
+-- first folds the removed opacity setting of earlier versions into the melee ring's colour
+-- settings' alpha, once. Loads the tracker
 -- (`PerfectThrust_tracker.lua`) as `mod._tracker` and feeds it from `hook_safe` hooks on the
--- melee windup actions, which only observe the game: no input, timing or buff is changed.
--- Registers the ring HUD element (`ui/PerfectThrust_hud_element.lua`).
+-- melee windup actions, which only observe the game: no input, timing or buff is changed. Loads
+-- the aim tracker (`PerfectThrust_aim_tracker.lua`) as `mod._aim_tracker`, which needs no hooks:
+-- the HUD element polls it while aiming down sights. Registers the ring HUD element
+-- (`ui/PerfectThrust_hud_element.lua`).
 -- module: PerfectThrust
 -- author: LucLeto
 local mod = get_mod("PerfectThrust")
@@ -18,42 +22,28 @@ mod.version = mod.get_metadata and mod:get_metadata("version") or "unknown"
 -- Settings
 -- ----------------------------------------------------------------------------
 
---- Cached setting values by setting id, initialised with the defaults from `PerfectThrust_data.lua`.
+--- Ring setting definitions of the melee and the aiming ring, shared with the data file and the HUD element.
+mod._ring_settings = mod:io_dofile("PerfectThrust/scripts/mods/PerfectThrust/PerfectThrust_ring_settings")
+
+--- Cached setting values by setting id, initialised with the defaults from `PerfectThrust_data.lua`;
+-- both rings' settings are added from `PerfectThrust_ring_settings.lua` below.
 -- Colour settings hold DMF's `{ a, r, g, b }` tables; they are only read, never written.
 local settings = {
-    display_mode = "progress",
     timing_mode = "predicted",
     show_heavy_threshold = true,
-    ring_radius = 32,
-    ring_thickness = 3,
-    offset_x = 0,
-    offset_y = 0,
-    ready_pulse = true,
-    unfilled_color = { 80, 70, 82, 86 },
-    charging_color = { 235, 240, 190, 90 },
-    heavy_available_color = { 229, 233, 255, 90 },
-    ready_color = { 255, 120, 225, 140 },
-    ready_pulse_color = { 255, 120, 225, 140 },
+    show_ads_blessings = true,
     debug_logging = false
 }
 
---- Every cached setting id, in the order `refresh_settings` reads them.
+--- Every cached setting id, in the order `refresh_settings` reads them; the ring settings follow.
 local SETTING_IDS = {
-    "display_mode",
     "timing_mode",
     "show_heavy_threshold",
-    "ring_radius",
-    "ring_thickness",
-    "offset_x",
-    "offset_y",
-    "ready_pulse",
-    "unfilled_color",
-    "charging_color",
-    "heavy_available_color",
-    "ready_color",
-    "ready_pulse_color",
+    "show_ads_blessings",
     "debug_logging"
 }
+
+mod._ring_settings.add_settings(settings, SETTING_IDS)
 
 --- Lookup of `SETTING_IDS`, so unrelated setting changes are ignored.
 local CACHED_SETTING_IDS = {}
@@ -66,7 +56,8 @@ end
 mod._settings = settings
 mod._settings_version = 0
 
---- Colour setting ids, whose alpha took over from the removed `ring_opacity` setting.
+--- The melee ring's colour setting ids, whose alpha took over from the removed `ring_opacity`
+-- setting; the aiming ring's colours came later and never had it.
 local COLOR_SETTING_IDS = {
     "unfilled_color",
     "charging_color",
@@ -156,6 +147,11 @@ mod._tracker = mod:io_dofile("PerfectThrust/scripts/mods/PerfectThrust/PerfectTh
 
 local Tracker = mod._tracker
 
+--- Aim state and aiming blessing detection, polled by the HUD element.
+mod._aim_tracker = mod:io_dofile("PerfectThrust/scripts/mods/PerfectThrust/PerfectThrust_aim_tracker")
+
+local AimTracker = mod._aim_tracker
+
 --- Forwards the start of a windup action to the tracker.
 -- tab: self windup action instance
 -- tab: action_settings action settings
@@ -190,12 +186,13 @@ mod:hook_safe(CLASS.ActionBlockWindup, "fixed_update", on_windup_fixed_update)
 -- DMF callbacks
 -- ----------------------------------------------------------------------------
 
---- DMF callback for game state changes; entering or leaving gameplay stops any tracked windup.
+--- DMF callback for game state changes; entering or leaving gameplay stops any tracked windup or aim.
 -- string: status `enter` or `exit`
 -- string: state_name game state class name
 mod.on_game_state_changed = function (status, state_name)
     if state_name == "StateGameplay" then
         Tracker.reset()
+        AimTracker.reset()
     end
 end
 
@@ -204,12 +201,15 @@ mod.on_enabled = function ()
     refresh_settings()
 
     Tracker.reset()
+    AimTracker.reset()
 end
 
 --- DMF callback run when the mod is disabled; stops tracking, which hides the ring.
--- DMF disables the hooks of a disabled mod, so nothing starts tracking again until it is enabled.
+-- DMF disables the hooks of a disabled mod, so nothing starts tracking again until it is enabled;
+-- the aim tracker is only polled by the HUD element, which DMF removes along with the mod.
 mod.on_disabled = function ()
     Tracker.reset()
+    AimTracker.reset()
 end
 
 -- ----------------------------------------------------------------------------

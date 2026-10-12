@@ -1,7 +1,7 @@
 {
   "name": "Perfect Thrust",
-  "description": "Adds a ring around the crosshair while charging an attack. It marks the moment letting go counts as a heavy attack and signals READY once every charge-dependent effect, such as the Thrust and Slow and Steady blessings, weapon windup bonuses or the Ogryn talent Crunch!, has reached its maximum stacks; without such effects, READY marks the heavy attack itself.",
-  "version": "1.2.0",
+  "description": "Adds a ring around the crosshair while charging an attack. It marks the moment letting go counts as a heavy attack and signals READY once every charge-dependent effect, such as the Thrust and Slow and Steady blessings, weapon windup bonuses or the Ogryn talent Crunch!, has reached its maximum stacks; without such effects, READY marks the heavy attack itself. While aiming down sights, it also signals READY once the ranged blessings Surgical and Pinpointing Target have reached their maximum stacks.",
+  "version": "1.3.0",
   "author": "LucLeto",
   "source": "https://github.com/LucLeto/darktide-mods-perfect-thrust",
   "funding": {
