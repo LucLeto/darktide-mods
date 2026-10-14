@@ -1,0 +1,10 @@
+{
+  "name": "For Da Emprah!",
+  "description": "Expands the communication wheel to 12 freely assignable slots and adds extra callouts for items, objectives and team communication, such as Yes, No, Sorry and Following. Every command can also be bound to its own key and, optionally, post to mission chat.",
+  "version": "1.0.0",
+  "author": "LucLeto",
+  "source": "https://github.com/LucLeto/darktide-mods-for-da-emprah",
+  "funding": {
+    "kofi": "https://ko-fi.com/lucleto"
+  }
+}
