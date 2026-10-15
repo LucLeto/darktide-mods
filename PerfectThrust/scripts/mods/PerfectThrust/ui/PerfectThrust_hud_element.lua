@@ -6,11 +6,13 @@
 -- the READY colour at READY, each switch with an optional short pulse, and it hides as soon as the
 -- tracker stops. Without a tracked windup and with the `show_ads_blessings` setting on, it asks the
 -- aim tracker instead, which fills the same ring while aiming blessings build and reports READY
--- once they are at their maximum. Each of the two rings has its own display mode, size, position,
--- READY pulse and colours (amber charging, lime heavy attack available and green READY by
--- default); the element applies the settings of the ring it shows. Colours and geometry are only
--- rewritten when the lit count, the READY or heavy attack state, the pulse colour phase, the shown
--- ring or the settings change.
+-- once they are at their maximum. Each of the two rings has its own display mode, crosshair
+-- following, size, position, READY pulse and colours (amber charging, lime heavy attack available
+-- and green READY by default); the element applies the settings of the ring it shows. Colours and
+-- geometry are only rewritten when the lit count, the READY or heavy attack state, the pulse colour
+-- phase, the shown ring or the settings change. With its `follow_crosshair` setting on, the shown
+-- ring moves with the game's crosshair as camera sway, weapon sway and recoil move it, on top of
+-- its offset settings.
 --
 -- Loaded by DMF from the `register_hud_element` call in `PerfectThrust.lua` and returned as the
 -- `HudElementPerfectThrust` class, with the crosshair's visibility groups and without the HUD
@@ -19,6 +21,7 @@
 -- classmod: HudElementPerfectThrust
 -- author: LucLeto
 local mod = get_mod("PerfectThrust")
+local Crosshair = require("scripts/ui/utilities/crosshair")
 local UIWidget = require("scripts/managers/ui/ui_widget")
 local UIWorkspaceSettings = require("scripts/settings/ui/ui_workspace_settings")
 local Tracker = mod._tracker
@@ -59,6 +62,11 @@ local DEG_TO_RAD = math_pi / 180
 -- The segment size follows a half sine from 1 to `1 + PULSE_EXTRA_SCALE` and back.
 local PULSE_DURATION = 0.25
 local PULSE_EXTRA_SCALE = 0.6
+
+--- Frame time passed to `Crosshair.position` on the first frame a ring follows the crosshair.
+-- The crosshair eases toward its aim point by `min(35 * dt, 1)` per frame, so this lands on it at
+-- once instead of sliding in from the screen centre.
+local CROSSHAIR_SNAP_DT = 1
 
 --- Default segment colours `{ a, r, g, b }` of the unlit, charging, heavy attack available and
 -- READY states, the colour settings' defaults. Used when a colour setting is invalid,
@@ -135,7 +143,8 @@ end
 --- Builds the scenegraph and widget definitions.
 -- One 0x0 node centred on the screen, like the crosshair's pivot, and one widget with a `rect`
 -- pass per segment. Segment offsets are relative to the node, so the ring centre is the node
--- position and the offset settings move it.
+-- position and the offset settings move it. A second 0x0 centred node is never moved: the pivot
+-- the crosshair position is measured from, so it leaves out the offset settings.
 -- treturn: tab definitions for `HudElementBase.init`
 local function _build_definitions()
     local passes = {}
@@ -161,6 +170,13 @@ local function _build_definitions()
                 vertical_alignment = "center",
                 size = { 0, 0 },
                 position = { 0, 0, 10 }
+            },
+            perfect_thrust_pivot = {
+                parent = "screen",
+                horizontal_alignment = "center",
+                vertical_alignment = "center",
+                size = { 0, 0 },
+                position = { 0, 0, 0 }
             }
         },
         widget_definitions = {
@@ -198,6 +214,10 @@ HudElementPerfectThrust.init = function (self, parent, draw_layer, start_scale)
     self._heavy_color = { 0, 0, 0, 0 }
     self._ready_color = { 0, 0, 0, 0 }
     self._pulse_color = { 0, 0, 0, 0 }
+    self._following_crosshair = false
+    self._crosshair_x = 0
+    self._crosshair_y = 0
+    self._crosshair_pivot = { 0, 0 }
 
     self:_clear_render_cache()
 
@@ -321,6 +341,54 @@ HudElementPerfectThrust.update = function (self, dt, t, ui_renderer, render_sett
             self:_refresh_ring(fill, ready, heavy_available)
         end
     end
+end
+
+--- Moves the shown ring with the crosshair, then draws the ring.
+-- While a ring is shown and its `follow_crosshair` setting is on, the ring widget's offset is the
+-- game's crosshair position, from `Crosshair.position` as the crosshair element uses it, on top of
+-- the scenegraph position the offset settings set. On the first such frame it starts at the
+-- crosshair's aim point; a switch to the other ring that follows too carries on smoothly, as both
+-- follow the same crosshair. Otherwise the offset is back at zero, so a ring that does not follow
+-- never inherits it. Done here rather than in `update`, like the crosshair, so both read the same
+-- frame's camera.
+-- number: dt frame delta time
+-- number: t time
+-- param: input_service input service
+-- tab: ui_renderer active UI renderer
+-- ?tab: render_settings render settings
+HudElementPerfectThrust._draw_widgets = function (self, dt, t, input_service, ui_renderer, render_settings)
+    local widget = self._widgets_by_name.ring
+
+    if self._shown and mod._settings[RING_KEYS[self._source].follow_crosshair] then
+        -- The unscaled world position is the node's own table; scaling it here allocates nothing.
+        local world_position = self:scenegraph_world_position("perfect_thrust_pivot")
+        local pivot = self._crosshair_pivot
+        local scale = ui_renderer.scale
+
+        pivot[1] = world_position[1] * scale
+        pivot[2] = world_position[2] * scale
+
+        local x, y = Crosshair.position(self._following_crosshair and dt or CROSSHAIR_SNAP_DT, t, self._parent, ui_renderer, self._crosshair_x, self._crosshair_y, pivot)
+        local offset = widget.offset
+
+        self._following_crosshair = true
+        self._crosshair_x = x
+        self._crosshair_y = y
+        offset[1] = x
+        offset[2] = y
+        widget.dirty = true
+    elseif self._following_crosshair then
+        local offset = widget.offset
+
+        self._following_crosshair = false
+        self._crosshair_x = 0
+        self._crosshair_y = 0
+        offset[1] = 0
+        offset[2] = 0
+        widget.dirty = true
+    end
+
+    HudElementPerfectThrust.super._draw_widgets(self, dt, t, input_service, ui_renderer, render_settings)
 end
 
 --- Colours the segments for a fill, READY and heavy attack state and pulse colour phase, when any

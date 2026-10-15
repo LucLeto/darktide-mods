@@ -1,6 +1,6 @@
 --- Shared definitions of Perfect Thrust's ring settings; one set for each ring.
--- The melee charge ring and the aiming ring each have their own display mode, size, thickness,
--- offsets, READY pulse and colours. The melee ring's settings use the plain setting ids, the
+-- The melee charge ring and the aiming ring each have their own display mode, crosshair following,
+-- size, thickness, offsets, READY pulse and colours. The melee ring's settings use the plain setting ids, the
 -- aiming ring's the same ids with `ADS_PREFIX`; the aiming ring has no heavy attack available
 -- colour, as it never shows that state. This module is the single source of their DMF widget
 -- definitions and defaults: `PerfectThrust_data.lua` builds both settings groups from it,
@@ -25,6 +25,7 @@ RingSettings.ADS_PREFIX = ADS_PREFIX
 
 --- The ring settings after the display mode, in menu order.
 local APPEARANCE_IDS = {
+    "follow_crosshair",
     "ring_radius",
     "ring_thickness",
     "offset_x",
@@ -54,6 +55,7 @@ local WINDUP_ONLY = {
 --- Localization ids the aiming ring has its own `ads_` text for; its other titles and tooltips
 -- are the melee ring's.
 local AIM_TEXT_IDS = {
+    follow_crosshair_tooltip = true,
     charging_color = true,
     charging_color_tooltip = true,
     unfilled_color_tooltip = true,
@@ -70,6 +72,10 @@ local DEFINITIONS = {
             { text = "display_mode_progress", value = "progress" },
             { text = "display_mode_ready_only", value = "ready_only" }
         }
+    },
+    follow_crosshair = {
+        type = "checkbox",
+        default_value = true
     },
     ring_radius = {
         type = "numeric",
