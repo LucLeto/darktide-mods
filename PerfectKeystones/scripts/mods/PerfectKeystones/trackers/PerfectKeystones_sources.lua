@@ -18,6 +18,7 @@
 -- module: PerfectKeystones_sources
 -- author: LucLeto
 local BuffTemplates = require("scripts/settings/buff/buff_templates")
+local TalentSettings = require("scripts/settings/talent/talent_settings")
 
 local math_floor = math.floor
 local math_huge = math.huge
@@ -192,6 +193,23 @@ Sources.replenishment = function (buff)
     end
 
     return next_t, interval
+end
+
+--- Returns a positive number from the game's talent settings, such as a stack interval.
+-- tab: path keys from `TalentSettings` down to the value, e.g. `{ "veteran", "veteran_tag", "stack_time" }`
+-- treturn: ?number the value, nil when it is missing or not a positive finite number
+Sources.talent_setting = function (path)
+    local value = TalentSettings
+
+    for i = 1, #path do
+        if type(value) ~= "table" then
+            return nil
+        end
+
+        value = value[path[i]]
+    end
+
+    return _is_positive(value) and value or nil
 end
 
 --- Returns how many Blitz charges are missing, through the ability extension's read-only accessor.

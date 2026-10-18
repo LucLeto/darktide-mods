@@ -1,8 +1,17 @@
 --- Keystone tracking of Perfect Keystones; decides what the inner and the outer ring show.
--- Binds to the local player's unit, scans its buffs once per frame for the templates its
--- archetype's keystones need, runs each selected and enabled keystone's presentation kind
+-- Binds to the local player's unit, keeps the instances of the buff templates its archetype's
+-- keystones need, runs each selected and enabled keystone's presentation kind
 -- (`trackers/PerfectKeystones_kinds.lua`) and hands the HUD element the presentation state of the
 -- keystone that owns each ring.
+--
+-- The buff instances are found by one scan of the unit's buffs when the tracker binds to it, on
+-- joining a mission or respawning. After that, while the HUD element forwards the game's
+-- `event_player_buff_added` and `event_player_buff_removed` events (`set_event_driven`), they keep
+-- the found instances current without scanning: the game fires them for every buff instance it
+-- creates or removes, server corrections and unit teardown included, while stacks gained or lost
+-- on an existing instance need no update. Only removing the found instance of a template that can
+-- have several instances (one without `max_stacks`) scans again, once. These are game events the
+-- vanilla buff HUD listens to as well, not hooks; without them the buffs are scanned every frame.
 --
 -- A keystone counts as selected while one of its `detect` buffs (the controller or passive buff
 -- its talent installs) is present, so the build is read from what the game actually applied:
@@ -10,10 +19,11 @@
 -- parsing the profile. Talent variants and upgrades are read from the observed buff instances.
 --
 -- Each ring has a fixed owner: the inner ring the first selected and enabled main keystone, the
--- thin outer ring Until Death (Zealot) or Lone Wolf (Arbitrator), in registry order. The talent
--- trees allow only one main keystone per character, so ownership never alternates between frames,
--- and one ring hiding never moves or takes over the other. Go Get 'Em! and Unleashed Brutality
--- have no ring; their buffs are only watched for the debug output.
+-- thin outer ring Until Death (Zealot) or Lone Wolf (Arbitrator), in registry order; a second
+-- keystone whose ring position setting is the inner ring swaps places with the main keystone. The
+-- talent trees allow only one main keystone per character, so ownership never alternates between
+-- frames, and one ring hiding never moves or takes over the other. Go Get 'Em! and Unleashed
+-- Brutality have no ring; their buffs are only watched for the debug output.
 --
 -- Every keystone's state is derived from the game's current values each frame, with no timers of
 -- its own, so tracking never pauses or restarts while a ring is hidden, disabled or off screen.
@@ -52,6 +62,13 @@ local REFRESH_GAP = 0.5
 -- console log only, unless the player changed DMF's logging settings.
 local DEBUG_PREFIX = "[Perfect Keystones] "
 
+--- Game modes in which nothing is tracked: the Mourningstar and the prologue's hub, where talents
+-- are active but nothing is fought. Missions, the Psykhanium and the training grounds are tracked.
+local UNTRACKED_GAME_MODES = {
+    hub = true,
+    prologue_hub = true
+}
+
 local SLOT_INNER = Registry.SLOT_INNER
 local SLOT_OUTER = Registry.SLOT_OUTER
 local KIND_NONE = Registry.KIND_NONE
@@ -74,7 +91,9 @@ local Tracker = {}
 -- A compiled entry holds the registry fields the kinds read, its buff templates as watch indices
 -- (`detect`, `buffs`, `active`, `by_slot`), its presentation `state` and its transition and debug
 -- bookkeeping (`selected`, `last_visible`, `last_phase`, `last_stacks`, `last_remaining`), plus
--- `seen_buff`, `seen_t` and `valid_t` for the kinds.
+-- `seen_buff`, `seen_t`, `valid_t` and the refill bookkeeping (`observed_count`, `gain_t`,
+-- `loss_t`, `sweep_from`, `shown_held`, `full_t`, and `restore_interval`, resolved once) for the
+-- kinds.
 local ARCHETYPE_DATA = {}
 
 --- Largest watch index of any archetype; the size of the `found` table.
@@ -120,10 +139,16 @@ local function _compile_entry(data, entry)
         cap = entry.cap,
         decay_style = entry.decay_style,
         cooldown_setting = entry.cooldown_setting,
+        ring_setting = entry.ring_setting,
         visibility_setting = entry.visibility_setting,
         gate = entry.gate,
         gate_setting = entry.gate_setting,
         settle = entry.settle or 0,
+        hide_at_zero = entry.hide_at_zero or false,
+        animate_gains = entry.animate_gains or false,
+        restore_progress = entry.restore_progress or false,
+        restore_setting = entry.restore_setting,
+        restore_interval = nil,
         detect = _watch_indices(data, entry.detect),
         buffs = _watch_indices(data, entry.buffs),
         active = _watch_indices(data, entry.active),
@@ -136,7 +161,13 @@ local function _compile_entry(data, entry)
         last_remaining = nil,
         seen_buff = nil,
         seen_t = 0,
-        valid_t = nil
+        valid_t = nil,
+        observed_count = nil,
+        gain_t = nil,
+        loss_t = nil,
+        sweep_from = nil,
+        shown_held = nil,
+        full_t = nil
     }
 
     if entry.by_slot then
@@ -185,7 +216,8 @@ end
 -- State
 -- ----------------------------------------------------------------------------
 
---- Watched buff instances of the current frame, by watch index; cleared before every scan.
+--- Watched buff instances by watch index, the first instance of each template; refilled by every
+-- scan and kept current by the buff events in between.
 local found = {}
 
 for i = 1, max_watch_count do
@@ -193,16 +225,23 @@ for i = 1, max_watch_count do
 end
 
 --- The bound player. `extensions` is the HUD's player extensions table it was bound to, which the
--- HUD replaces for every new player unit and clears while there is none; `data` is the archetype's
--- tracking data, nil while nothing can be tracked; `fresh` is set until the first refresh after a
--- bind, which notes no transitions; `last_t` is the fixed-step time of the latest refresh.
+-- HUD replaces for every new player unit and clears while there is none; `unit` is that player
+-- unit, whose buffs alone the events update; `data` is the archetype's tracking data, nil while
+-- nothing can be tracked; `fresh` is set until the first refresh after a bind, which notes no
+-- transitions; `last_t` is the fixed-step time of the latest refresh. `event_driven` is set while
+-- the HUD element forwards the buff events, and `dirty` while `found` needs a scan: after a bind,
+-- after the events were off, and after the found instance of a template that can have several
+-- instances was removed.
 local state = {
     extensions = nil,
+    unit = nil,
     archetype = nil,
     data = nil,
     buff_extension = nil,
     fresh = true,
-    last_t = nil
+    last_t = nil,
+    event_driven = false,
+    dirty = true
 }
 
 --- Frame context passed to the kinds.
@@ -212,6 +251,7 @@ local ctx = {
     settings = nil,
     inventory_component = nil,
     talent_resource_component = nil,
+    character_state_component = nil,
     ability_extension = nil
 }
 
@@ -238,6 +278,12 @@ local function _reset_entries(data)
             compiled.seen_buff = nil
             compiled.seen_t = 0
             compiled.valid_t = nil
+            compiled.observed_count = nil
+            compiled.gain_t = nil
+            compiled.loss_t = nil
+            compiled.sweep_from = nil
+            compiled.shown_held = nil
+            compiled.full_t = nil
         end
     end
 end
@@ -247,13 +293,16 @@ local function _reset_state()
     _reset_entries(state.data)
 
     state.extensions = nil
+    state.unit = nil
     state.archetype = nil
     state.data = nil
     state.buff_extension = nil
     state.fresh = true
     state.last_t = nil
+    state.dirty = true
     ctx.inventory_component = nil
     ctx.talent_resource_component = nil
+    ctx.character_state_component = nil
     ctx.ability_extension = nil
 
     for i = 1, max_watch_count do
@@ -261,10 +310,22 @@ local function _reset_state()
     end
 end
 
+--- Returns whether the current game mode is one of `UNTRACKED_GAME_MODES`.
+-- treturn: bool
+local function _in_untracked_game_mode()
+    local state_managers = Managers.state
+    local game_mode_manager = state_managers and state_managers.game_mode
+    local game_mode_name = game_mode_manager and game_mode_manager.game_mode_name and game_mode_manager:game_mode_name()
+
+    return game_mode_name ~= nil and UNTRACKED_GAME_MODES[game_mode_name] == true
+end
+
 --- Binds to the HUD's player extensions of a new player unit.
--- Nothing is tracked when there is no unit, the archetype has no keystone in the registry or the
--- buff extension cannot be read. The inventory and talent resource components are optional; the
--- keystones that need them hide without them.
+-- Nothing is tracked when there is no unit, in a hub (`UNTRACKED_GAME_MODES`), when the archetype
+-- has no keystone in the registry or when the buff extension cannot be read. The game mode only
+-- changes along with the player unit, so it is checked here once. The inventory, talent resource
+-- and character state components are optional; the keystones that need them hide without them,
+-- and without the character state Feel No Pain shows no refill progress.
 -- ?tab: player_extensions the HUD's player extensions, with `unit_data`, `buff` and `ability`
 -- ?tab: player the HUD's player
 local function _bind(player_extensions, player)
@@ -273,6 +334,14 @@ local function _bind(player_extensions, player)
     state.extensions = player_extensions
 
     if not player_extensions then
+        return
+    end
+
+    if _in_untracked_game_mode() then
+        if mod._settings.debug_logging then
+            mod:info(DEBUG_PREFIX .. "not tracking in the hub")
+        end
+
         return
     end
 
@@ -290,15 +359,17 @@ local function _bind(player_extensions, player)
     if read_component then
         ctx.inventory_component = read_component(unit_data_extension, "inventory")
         ctx.talent_resource_component = read_component(unit_data_extension, "talent_resource")
+        ctx.character_state_component = read_component(unit_data_extension, "character_state")
     end
 
     ctx.ability_extension = player_extensions.ability
+    state.unit = player_extensions.unit
     state.archetype = archetype
     state.data = data
     state.buff_extension = buff_extension
 
     if mod._settings.debug_logging then
-        mod:info(DEBUG_PREFIX .. "bound to a %s, watching %d buff templates", archetype, data.count)
+        mod:info(DEBUG_PREFIX .. "bound to a %s, watching %d buff templates (%s)", archetype, data.count, state.event_driven and "buff events" or "scanning every frame")
     end
 end
 
@@ -306,7 +377,7 @@ end
 -- Frame update
 -- ----------------------------------------------------------------------------
 
---- Collects this frame's watched buffs into `found`, the first instance of each template.
+--- Collects the watched buffs into `found`, the first instance of each template.
 -- tab: data archetype tracking data
 local function _scan(data)
     local count = data.count
@@ -423,7 +494,8 @@ end
 
 --- Updates every keystone of the bound player and returns the presentation state of each ring.
 -- Called by the HUD element once per frame. A new player extensions table binds to the new unit
--- first. With every keystone of the archetype disabled, no buff is scanned.
+-- first. The buffs are scanned when `found` is dirty, or every frame without the buff events; with
+-- every keystone of the archetype disabled, no buff is scanned.
 -- ?tab: player_extensions the HUD's player extensions, nil while there is no player unit
 -- ?tab: player the HUD's player
 -- treturn: ?tab presentation state of the inner ring, nil when it is hidden
@@ -472,7 +544,11 @@ Tracker.refresh = function (player_extensions, player)
     ctx.t = t
     ctx.settings = settings
 
-    _scan(data)
+    if state.dirty or not state.event_driven then
+        state.dirty = false
+
+        _scan(data)
+    end
 
     local debug_logging = settings.debug_logging
     local inner, outer
@@ -522,6 +598,13 @@ Tracker.refresh = function (player_extensions, player)
 
     state.fresh = false
 
+    -- A second keystone set to the inner ring swaps places with the main keystone.
+    local ring_setting = outer and outer.ring_setting
+
+    if ring_setting and settings[ring_setting] == SLOT_INNER then
+        inner, outer = outer, inner
+    end
+
     local inner_state = inner and inner.state
     local outer_state = outer and outer.state
 
@@ -536,6 +619,64 @@ end
 -- enabled or disabled. The next refresh binds again.
 Tracker.reset = function ()
     _reset_state()
+end
+
+--- Sets whether the HUD element forwards the buff events. Either way the next refresh scans once:
+-- when the events start, any missed while they were off are caught up; when they stop, refresh
+-- scans every frame again.
+-- bool: event_driven whether `on_buff_added` and `on_buff_removed` are called for every buff event
+Tracker.set_event_driven = function (event_driven)
+    state.event_driven = event_driven and true or false
+    state.dirty = true
+end
+
+--- Returns whether a buff instance belongs to the bound player unit and has a watched template.
+-- tab: buff_instance buff instance from a buff event
+-- treturn: ?int its watch index
+local function _watch_index(buff_instance)
+    local data = state.data
+
+    if not data or not buff_instance.template_context or not buff_instance.template_name then
+        return nil
+    end
+
+    local template_context = buff_instance:template_context()
+
+    if not template_context or template_context.unit ~= state.unit then
+        return nil
+    end
+
+    return data.watch[buff_instance:template_name()]
+end
+
+--- Handles the game's `event_player_buff_added` for a new buff instance of any player unit; the
+-- HUD element forwards it. A watched template's instance of the bound unit is kept when its
+-- template has no found instance yet, as a scan keeps the first one.
+-- tab: buff_instance the new buff instance
+Tracker.on_buff_added = function (buff_instance)
+    local index = _watch_index(buff_instance)
+
+    if index and not found[index] then
+        found[index] = buff_instance
+    end
+end
+
+--- Handles the game's `event_player_buff_removed` for a buff instance of any player unit that is
+-- about to be removed; the HUD element forwards it. The found instance of a watched template is
+-- forgotten; when its template can have several instances, the next refresh scans for another one.
+-- tab: buff_instance the removed buff instance
+Tracker.on_buff_removed = function (buff_instance)
+    local index = _watch_index(buff_instance)
+
+    if index and found[index] == buff_instance then
+        found[index] = false
+
+        local template = buff_instance.template and buff_instance:template()
+
+        if not template or not template.max_stacks then
+            state.dirty = true
+        end
+    end
 end
 
 return Tracker

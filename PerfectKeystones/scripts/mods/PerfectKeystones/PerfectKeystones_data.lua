@@ -4,10 +4,12 @@
 -- and vertical offset, pulses and the stack and time labels. `Appearance`: the active, unfilled,
 -- expiring and cooldown colours and the near-expiry threshold. One group per archetype (Veteran,
 -- Zealot, Ogryn, Psyker, Arbitrator, Hive Scum, Skitarius) with an enable checkbox for each of its
--- keystones that draws a ring, 23 in all, plus Until Death's cooldown display, Feel No Pain's and
--- Flensing Protocols' visibility and Empowered Psionics' Blitz-only visibility. `Miscellaneous`:
--- debug output. Go Get 'Em! and Unleashed Brutality draw no ring and have no checkbox. Every option
--- has a tooltip. Colours are DMF colour pickers with alpha, stored as `{ a, r, g, b }`.
+-- keystones that draws a ring, 23 in all. Until Death's cooldown display, Feel No Pain's and
+-- Flensing Protocols' visibility and Empowered Psionics' Blitz-only visibility are nested under
+-- their keystone's checkbox, so DMF indents them there and hides them while it is off.
+-- `Miscellaneous`: debug output. Go Get 'Em! and Unleashed Brutality draw no ring and have no
+-- checkbox. Every option has a tooltip. Colours are DMF colour pickers with alpha, stored as
+-- `{ a, r, g, b }`.
 --
 -- The ring and appearance groups are built from `PerfectKeystones_ring_settings.lua` and the
 -- archetype groups from `PerfectKeystones_registry.lua`, which also hold their defaults; the debug

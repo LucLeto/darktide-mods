@@ -22,9 +22,20 @@
 -- `cap` where the effective maximum is read, one of the `CAP_*` values;
 -- `active` buff templates of a timed active phase (duration kind, and the active phase of a hybrid);
 -- `cooldown_setting`, `visibility_setting`, `gate_setting` ids of the entry's extra settings;
+-- `ring_setting` for an outer ring entry: id of its setting that can move it to the inner ring,
+-- swapping places with the main keystone;
 -- `gate` condition the gate setting adds, one of the `GATE_*` values;
 -- `settle` seconds a below-maximum deficit is held back after the stack buff first appears, as the
 -- starting stacks reach a client over the network;
+-- `hide_at_zero` for an entry with a visibility setting: hidden at zero in both modes, so `Always`
+-- shows it from the first stack on and `Below maximum` between zero and the maximum;
+-- `animate_gains` for a below-maximum entry: newly gained stacks sweep in, and on reaching the
+-- maximum the full ring stays visible for a moment before it hides;
+-- `restore_progress` for stacks the game restores on a timer, one of the `RESTORE_*` values: the
+-- share of the next stack fills in the cooldown colour over the restore interval, rebuilt from
+-- observed losses and gains, as the timer itself is not sent to clients;
+-- `restore_setting` with `RESTORE_TALENT_SETTING`: path of the interval in the game's
+-- `TalentSettings`;
 -- `decay_style` `DECAY_STABLE` (stable fill, next stack changes colour) or `DECAY_PROGRESSIVE`
 -- (next stack drains); every current stack-decay keystone has the confirmed stable style.
 --
@@ -81,6 +92,12 @@ Registry.VISIBILITY_ALWAYS = "always"
 Registry.DECAY_STABLE = "stable"
 Registry.DECAY_PROGRESSIVE = "progressive"
 
+--- Sources of a restore interval. `RESTORE_CHILD_TEMPLATE` the parent buff template's
+-- `restore_child_duration`, whose restoration the game pauses while the player is knocked down;
+-- `RESTORE_TALENT_SETTING` a value in the game's `TalentSettings`, named by `restore_setting`.
+Registry.RESTORE_CHILD_TEMPLATE = "child_template"
+Registry.RESTORE_TALENT_SETTING = "talent_setting"
+
 local KIND_DURATION = Registry.KIND_DURATION
 local KIND_STACK_DECAY = Registry.KIND_STACK_DECAY
 local KIND_STACK_SHARED = Registry.KIND_STACK_SHARED
@@ -107,6 +124,12 @@ Registry.ARCHETYPES = {
     { name = "adamant", group = "adamant_group" },
     { name = "broker", group = "broker_group" },
     { name = "cryptic", group = "cryptic_group" }
+}
+
+--- Dropdown options of the ring position settings; the values are the slot names.
+local RING_OPTIONS = {
+    { text = "ring_outer", value = Registry.SLOT_OUTER },
+    { text = "ring_inner", value = Registry.SLOT_INNER }
 }
 
 --- Dropdown options of the below-maximum visibility settings.
@@ -137,6 +160,8 @@ Registry.ENTRIES = {
     },
     {
         -- Held tagging resource in the talent_resource component; the cap is set by the controller.
+        -- One stack is gained per stack time after the last change; shown below the maximum by
+        -- default.
         id = "focus_target",
         archetype = "veteran",
         talent = "veteran_improved_tag",
@@ -144,7 +169,12 @@ Registry.ENTRIES = {
         slot = SLOT_INNER,
         detect = { "veteran_improved_tag" },
         buffs = { "veteran_improved_tag" },
-        cap = CAP_TEMPLATE_DATA
+        cap = CAP_TEMPLATE_DATA,
+        visibility_setting = "focus_target_visibility",
+        settle = 0.5,
+        animate_gains = true,
+        restore_progress = Registry.RESTORE_TALENT_SETTING,
+        restore_setting = { "veteran", "veteran_tag", "stack_time" }
     },
     {
         -- The active buff of the wielded weapon first, otherwise the resource for the next switch.
@@ -159,11 +189,15 @@ Registry.ENTRIES = {
             slot_primary = "veteran_weapon_switch_ranged_visual",
             slot_secondary = "veteran_weapon_switch_melee_visual"
         },
-        cap = CAP_MAX_STACKS
+        cap = CAP_MAX_STACKS,
+        visibility_setting = "weapons_specialist_visibility",
+        hide_at_zero = true,
+        animate_gains = true
     },
     -- Zealot -----------------------------------------------------------------
     {
-        -- The rescue proc's protection, then its cooldown; hidden while ready.
+        -- The rescue proc's protection, or the shorter one of the Zealous Pilgrim modifier, then the
+        -- proc's cooldown; hidden while ready.
         id = "until_death",
         archetype = "zealot",
         talent = "zealot_resist_death",
@@ -171,7 +205,9 @@ Registry.ENTRIES = {
         slot = SLOT_OUTER,
         detect = { "zealot_resist_death" },
         buffs = { "zealot_resist_death" },
-        cooldown_setting = "until_death_show_cooldown"
+        active = { "zealot_resist_death_temp" },
+        cooldown_setting = "until_death_show_cooldown",
+        ring_setting = "until_death_ring"
     },
     {
         -- The personal buff at full Fury first, otherwise the held Fury.
@@ -194,7 +230,10 @@ Registry.ENTRIES = {
         slot = SLOT_INNER,
         detect = { "zealot_martyrdom_base" },
         buffs = { "zealot_martyrdom_base" },
-        cap = CAP_TEMPLATE_DATA
+        cap = CAP_TEMPLATE_DATA,
+        visibility_setting = "martyrdom_visibility",
+        hide_at_zero = true,
+        animate_gains = true
     },
     {
         -- The active buff first, otherwise the held Momentum (child stacks without the baseline).
@@ -233,6 +272,7 @@ Registry.ENTRIES = {
     },
     {
         -- Strength stacks (child stacks without the baseline); shown below the maximum by default.
+        -- One stack is restored per restore interval after the last loss and the last gain.
         id = "feel_no_pain",
         archetype = "ogryn",
         talent = "ogryn_carapace_armor",
@@ -242,7 +282,9 @@ Registry.ENTRIES = {
         buffs = { "ogryn_carapace_armor_parent" },
         cap = CAP_CHILD_TEMPLATE,
         visibility_setting = "feel_no_pain_visibility",
-        settle = 0.5
+        settle = 0.5,
+        animate_gains = true,
+        restore_progress = Registry.RESTORE_CHILD_TEMPLATE
     },
     -- Psyker -----------------------------------------------------------------
     {
@@ -337,7 +379,8 @@ Registry.ENTRIES = {
         kind = KIND_REPLENISHMENT,
         slot = SLOT_OUTER,
         detect = { "adamant_grenade_replenishment" },
-        buffs = { "adamant_grenade_replenishment" }
+        buffs = { "adamant_grenade_replenishment" },
+        ring_setting = "lone_wolf_ring"
     },
     {
         -- Permanent companion specialisation: recognised, never drawn.
@@ -427,21 +470,35 @@ Registry.ENTRIES = {
         buffs = { "cryptic_dissector_stack" },
         cap = CAP_MAX_STACKS_CAP,
         visibility_setting = "flensing_protocols_visibility",
-        settle = 0.5
+        settle = 0.5,
+        animate_gains = true
     }
 }
 
---- Extra DMF settings, by entry id, shown right after the entry's checkbox; without `setting_id`,
--- `title` and `tooltip`, which `_extra_widget` adds.
+--- Extra DMF settings, by entry id, nested under the entry's checkbox; without `setting_id` and
+-- `tooltip`, which `_extra_widget` adds.
 local EXTRA_SETTINGS = {
+    focus_target = {
+        { id = "focus_target_visibility", type = "dropdown", default_value = Registry.VISIBILITY_BELOW_MAX, options = VISIBILITY_OPTIONS }
+    },
+    weapons_specialist = {
+        { id = "weapons_specialist_visibility", type = "dropdown", default_value = Registry.VISIBILITY_ALWAYS, options = VISIBILITY_OPTIONS }
+    },
+    martyrdom = {
+        { id = "martyrdom_visibility", type = "dropdown", default_value = Registry.VISIBILITY_ALWAYS, options = VISIBILITY_OPTIONS }
+    },
     until_death = {
-        { id = "until_death_show_cooldown", type = "checkbox", default_value = true }
+        { id = "until_death_show_cooldown", type = "checkbox", default_value = true },
+        { id = "until_death_ring", type = "dropdown", default_value = Registry.SLOT_OUTER, options = RING_OPTIONS }
     },
     feel_no_pain = {
         { id = "feel_no_pain_visibility", type = "dropdown", default_value = Registry.VISIBILITY_BELOW_MAX, options = VISIBILITY_OPTIONS }
     },
     empowered_psionics = {
         { id = "empowered_psionics_blitz_only", type = "checkbox", default_value = false }
+    },
+    lone_wolf = {
+        { id = "lone_wolf_ring", type = "dropdown", default_value = Registry.SLOT_OUTER, options = RING_OPTIONS }
     },
     flensing_protocols = {
         { id = "flensing_protocols_visibility", type = "dropdown", default_value = Registry.VISIBILITY_BELOW_MAX, options = VISIBILITY_OPTIONS }
@@ -500,8 +557,10 @@ end
 -- Settings menu
 -- ----------------------------------------------------------------------------
 
---- Appends one archetype's widgets: each renderable entry's enable checkbox, titled by its id,
--- followed by its extra settings. Entries without a ring get no widget.
+--- Appends one archetype's widgets: each renderable entry's enable checkbox, titled by its id.
+-- An entry's extra settings are the checkbox's own sub-widgets, so DMF shows them indented under
+-- the keystone they belong to, and hides them while that keystone is switched off. Entries without
+-- a ring get no widget.
 -- tab: sub_widgets DMF widget list to append to
 -- string: archetype archetype name
 Registry.append_widgets = function (sub_widgets, archetype)
@@ -511,20 +570,23 @@ Registry.append_widgets = function (sub_widgets, archetype)
         local entry = entries[i]
 
         if entry.archetype == archetype and Registry.is_renderable(entry) then
-            sub_widgets[#sub_widgets + 1] = {
+            local widget = {
                 setting_id = entry.id,
                 type = "checkbox",
                 default_value = true,
                 tooltip = entry.id .. "_tooltip"
             }
-
             local extras = EXTRA_SETTINGS[entry.id]
 
             if extras then
+                widget.sub_widgets = {}
+
                 for j = 1, #extras do
-                    sub_widgets[#sub_widgets + 1] = _extra_widget(extras[j])
+                    widget.sub_widgets[j] = _extra_widget(extras[j])
                 end
             end
+
+            sub_widgets[#sub_widgets + 1] = widget
         end
     end
 end
