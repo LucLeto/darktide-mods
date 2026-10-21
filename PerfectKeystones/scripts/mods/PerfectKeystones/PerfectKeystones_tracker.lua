@@ -325,7 +325,8 @@ end
 -- has no keystone in the registry or when the buff extension cannot be read. The game mode only
 -- changes along with the player unit, so it is checked here once. The inventory, talent resource
 -- and character state components are optional; the keystones that need them hide without them,
--- and without the character state Feel No Pain shows no refill progress.
+-- and without the character state Feel No Pain shows no refill progress and Lone Wolf is not
+-- hidden while captured.
 -- ?tab: player_extensions the HUD's player extensions, with `unit_data`, `buff` and `ability`
 -- ?tab: player the HUD's player
 local function _bind(player_extensions, player)

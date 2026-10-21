@@ -724,16 +724,19 @@ end
 
 --- `replenishment`: the remaining time until the next automatic Blitz charge, as a countdown in
 -- the cooldown colour, while charges are missing and the game runs a timer; hidden at full
--- inventory. A running countdown whose timer is cleared while charges are still missing (the frame
--- between a restored charge and the next interval) stays shown empty for `REPLENISH_GAP_HOLD`.
+-- inventory and while the player is captured (hogtied), as the game's own Blitz display is, so the
+-- timer is read afresh after the rescue. A running countdown whose timer is cleared while charges
+-- are still missing (the frame between a restored charge and the next interval) stays shown empty
+-- for `REPLENISH_GAP_HOLD`.
 -- tab: tracked compiled tracking entry
 -- tab: state presentation state
 -- tab: ctx frame context
 Kinds.replenishment = function (tracked, state, ctx)
     local buff = _first(ctx.found, tracked.buffs)
     local missing = buff and Sources.missing_blitz_charges(ctx.ability_extension)
+    local character_state_component = ctx.character_state_component
 
-    if not missing or missing <= 0 then
+    if not missing or missing <= 0 or character_state_component and PlayerUnitStatus.is_hogtied(character_state_component) then
         tracked.valid_t = nil
 
         _hide(state)

@@ -1,7 +1,7 @@
 {
   "name": "Perfect Keystones",
   "description": "Adds a ring around the crosshair that tracks your class keystone: the remaining time of timed effects such as Execution Order, Blazing Piety or Adrenaline Frenzy, the stacks of effects such as Marksman's Focus, Warp Siphon or Redline Capacitors with a warning colour before the next stack expires, build-up resources before an activation, Until Death's protection and cooldown and Lone Wolf's next Blitz charge. A thin outer ring shows Until Death or Lone Wolf next to your main keystone. Visual only: buffs, cooldowns and inputs are never changed.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "LucLeto",
   "source": "https://github.com/LucLeto/darktide-mods-perfect-keystones",
   "funding": {
