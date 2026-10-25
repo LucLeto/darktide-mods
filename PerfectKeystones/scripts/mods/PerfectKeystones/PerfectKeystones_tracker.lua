@@ -27,6 +27,8 @@
 --
 -- Every keystone's state is derived from the game's current values each frame, with no timers of
 -- its own, so tracking never pauses or restarts while a ring is hidden, disabled or off screen.
+-- While the player is captured (hogtied), both rings hide, as the game's own ability displays do;
+-- the keystones keep being tracked, and after the rescue the rings return without pulses.
 -- The tracker also notes each keystone's transitions: activation, a refreshed countdown, the switch
 -- from active to cooldown, reaching the maximum and, with the `pulse_on_stack_change` setting, any
 -- stack change set its `pulse` flag for that frame; with `debug_logging` on, phase
@@ -39,6 +41,7 @@
 -- author: LucLeto
 local mod = get_mod("PerfectKeystones")
 local FixedFrame = require("scripts/utilities/fixed_frame")
+local PlayerUnitStatus = require("scripts/utilities/attack/player_unit_status")
 local Registry = mod._registry
 local Kinds = mod:io_dofile("PerfectKeystones/scripts/mods/PerfectKeystones/trackers/PerfectKeystones_kinds")
 
@@ -228,7 +231,8 @@ end
 -- HUD replaces for every new player unit and clears while there is none; `unit` is that player
 -- unit, whose buffs alone the events update; `data` is the archetype's tracking data, nil while
 -- nothing can be tracked; `fresh` is set until the first refresh after a bind, which notes no
--- transitions; `last_t` is the fixed-step time of the latest refresh. `event_driven` is set while
+-- transitions; `last_t` is the fixed-step time of the latest refresh; `captured` is set while the
+-- player is hogtied, as of the latest refresh. `event_driven` is set while
 -- the HUD element forwards the buff events, and `dirty` while `found` needs a scan: after a bind,
 -- after the events were off, and after the found instance of a template that can have several
 -- instances was removed.
@@ -240,6 +244,7 @@ local state = {
     buff_extension = nil,
     fresh = true,
     last_t = nil,
+    captured = false,
     event_driven = false,
     dirty = true
 }
@@ -299,6 +304,7 @@ local function _reset_state()
     state.buff_extension = nil
     state.fresh = true
     state.last_t = nil
+    state.captured = false
     state.dirty = true
     ctx.inventory_component = nil
     ctx.talent_resource_component = nil
@@ -325,7 +331,7 @@ end
 -- has no keystone in the registry or when the buff extension cannot be read. The game mode only
 -- changes along with the player unit, so it is checked here once. The inventory, talent resource
 -- and character state components are optional; the keystones that need them hide without them,
--- and without the character state Feel No Pain shows no refill progress and Lone Wolf is not
+-- and without the character state Feel No Pain shows no refill progress and the rings are not
 -- hidden while captured.
 -- ?tab: player_extensions the HUD's player extensions, with `unit_data`, `buff` and `ability`
 -- ?tab: player the HUD's player
@@ -552,6 +558,22 @@ Tracker.refresh = function (player_extensions, player)
     end
 
     local debug_logging = settings.debug_logging
+    local character_state_component = ctx.character_state_component
+    local captured = character_state_component ~= nil and PlayerUnitStatus.is_hogtied(character_state_component)
+
+    if captured ~= state.captured then
+        state.captured = captured
+
+        -- After the rescue, the rings return as they are now, without pulses.
+        if not captured then
+            state.fresh = true
+        end
+
+        if debug_logging then
+            mod:info(DEBUG_PREFIX .. (captured and "captured, rings hidden" or "rescued"))
+        end
+    end
+
     local inner, outer
 
     for i = 1, #tracked do
@@ -567,6 +589,11 @@ Tracker.refresh = function (player_extensions, player)
 
         if applicable then
             compiled.kind(compiled, compiled.state, ctx)
+
+            -- The kind still runs while captured, so its bookkeeping stays current.
+            if captured then
+                hide_state(compiled.state)
+            end
         else
             hide_state(compiled.state)
         end
