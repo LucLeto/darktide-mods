@@ -47,6 +47,7 @@ local COMMAND = {
     SORRY = 28
 }
 
+-- Commands by setting id. The menus list them by label instead (see menu_options below).
 local DROPDOWN_OPTIONS = {
     { text = "option_nil",               value = COMMAND.NONE },
     { text = "option_ammo",              value = COMMAND.AMMO },
@@ -77,6 +78,43 @@ local DROPDOWN_OPTIONS = {
     { text = "option_uncharged_medicae", value = COMMAND.UNCHARGED_MEDICAE },
     { text = "option_vacuum_capsule",    value = COMMAND.VACUUM_CAPSULE },
     { text = "option_yes",               value = COMMAND.YES },
+}
+
+-- Labels are game loc keys, so the game provides every translation. Mod commands show the subtitle of their own
+-- voice line, which is also their default chat message, from fixed voices so the text doesn't depend on the speaker.
+-- Most come from one voice. Where its line loses its meaning in a language, another variant or voice is used:
+-- Following ("Following your lead!" turns into an order in Chinese), Medipack Down (the French of most voices just
+-- says "a medipack") and Sorry. Vanilla commands keep the stock wheel's labels.
+local LABEL_LOC_KEYS = {
+    option_nil = "loc_setting_notification_type_none",
+    option_ammo = "loc_veteran_male_a__smart_tag_vo_pickup_ammo_01",
+    option_ammo_crate = "loc_veteran_male_a__smart_tag_vo_pickup_deployed_ammo_crate_01",
+    option_cryonic_rod = "loc_veteran_male_a__smart_tag_vo_pickup_control_rod_01",
+    option_diamantine = "loc_veteran_male_a__smart_tag_vo_pickup_platinum_01",
+    option_enemy = "loc_communication_wheel_display_name_enemy",
+    option_following = "loc_veteran_male_a__com_wheel_vo_follow_you_03",
+    option_for_the_emperor = "loc_communication_wheel_display_name_cheer",
+    option_go_there = "loc_communication_wheel_display_name_location",
+    option_grenade = "loc_veteran_male_a__smart_tag_vo_small_grenade_01",
+    option_grimoire = "loc_veteran_male_a__smart_tag_vo_pickup_side_mission_grimoire_01",
+    option_health_booster = "loc_veteran_male_a__smart_tag_stimm_health_a_01",
+    option_look_there = "loc_communication_wheel_display_name_attention",
+    option_medicae_station = "loc_veteran_male_a__smart_tag_vo_station_health_01",
+    option_medipack = "loc_veteran_male_a__smart_tag_vo_pickup_medical_crate_01",
+    option_medipack_down = "loc_cryptic_a__smart_tag_vo_pickup_deployed_medical_crate_01",
+    option_mine = "loc_veteran_male_a__com_wheel_vo_need_that_03",
+    option_need_ammo = "loc_communication_wheel_display_name_need_ammo",
+    option_need_healing = "loc_communication_wheel_display_name_need_health",
+    option_no = "loc_veteran_male_a__com_wheel_vo_no_01",
+    option_plasteel = "loc_veteran_male_a__smart_tag_vo_pickup_forge_metal_01",
+    option_power_cell = "loc_veteran_male_a__smart_tag_vo_pickup_battery_01",
+    option_relic = "loc_veteran_male_a__smart_tag_vo_pickup_side_mission_consumable_01",
+    option_scripture = "loc_veteran_male_a__smart_tag_vo_pickup_side_mission_tome_01",
+    option_sorry = "loc_veteran_male_b__response_for_friendly_fire_from_veteran_01",
+    option_thanks = "loc_communication_wheel_display_name_thanks",
+    option_uncharged_medicae = "loc_veteran_male_a__smart_tag_vo_station_health_without_battery_01",
+    option_vacuum_capsule = "loc_veteran_male_a__smart_tag_vo_pickup_container_01",
+    option_yes = "loc_veteran_male_a__com_wheel_vo_yes_05",
 }
 
 local DEFAULT_WHEEL_VALUES = {
@@ -125,25 +163,40 @@ mod.command_enabled_setting_id = command_enabled_setting_id
 mod.command_chat_setting_id = command_chat_setting_id
 mod.command_customize_setting_id = command_customize_setting_id
 mod.command_message_setting_id = command_message_setting_id
+mod.label_loc_keys = LABEL_LOC_KEYS
 
 local pairs = pairs
 local ipairs = ipairs
 
-local function shallow_copy(source)
-    local copy = {}
+-- The game loads its strings before any mod, so the labels resolve here, once, in the player's language.
+local labels = {}
 
-    for key, value in pairs(source) do
-        copy[key] = value
-    end
-
-    return copy
+for id, loc_key in pairs(LABEL_LOC_KEYS) do
+    labels[id] = Localize(loc_key)
 end
 
-local function build_dropdown_options()
-    local options = {}
+mod.labels = labels
 
-    for i, option in ipairs(DROPDOWN_OPTIONS) do
-        options[i] = shallow_copy(option)
+local function by_label(a, b)
+    return labels[a.text] < labels[b.text]
+end
+
+-- The menus list commands alphabetically in the player's language, with None first.
+local menu_options = {}
+
+for i = 2, #DROPDOWN_OPTIONS do
+    menu_options[i - 1] = DROPDOWN_OPTIONS[i]
+end
+
+table.sort(menu_options, by_label)
+table.insert(menu_options, 1, DROPDOWN_OPTIONS[1])
+
+-- The labels are already localized, so DMF must not look them up in the mod's own strings.
+local function build_dropdown_options()
+    local options = { localize = false }
+
+    for i, option in ipairs(menu_options) do
+        options[i] = { text = labels[option.text], value = option.value }
     end
 
     return options
@@ -200,7 +253,8 @@ local function get_command_chat_widget(option)
     }
 end
 
--- One toggle per command; DMF only shows its settings while it is on, and they only apply while it is on.
+-- One toggle per command; DMF only shows its settings while it is on, and they only apply while it is on. Its title
+-- is the game-localized label, so only this widget opts out of DMF localization; its sub widgets keep it.
 local function get_command_widget(option)
     local sub_widgets = {
         {
@@ -221,8 +275,9 @@ local function get_command_widget(option)
     return {
         setting_id = command_enabled_setting_id(option.text),
         type = "checkbox",
-        title = option.text,
-        tooltip = "command_toggle_tooltip",
+        localize = false,
+        title = labels[option.text],
+        tooltip = mod:localize("command_toggle_tooltip"),
         default_value = false,
         sub_widgets = sub_widgets,
     }
@@ -231,7 +286,7 @@ end
 local function get_command_widgets()
     local widgets = {}
 
-    for _, option in ipairs(DROPDOWN_OPTIONS) do
+    for _, option in ipairs(menu_options) do
         if option.value > COMMAND.NONE then
             widgets[#widgets + 1] = get_command_widget(option)
         end

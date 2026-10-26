@@ -37,6 +37,8 @@ local command_enabled_setting_id = mod.command_enabled_setting_id
 local command_chat_setting_id = mod.command_chat_setting_id
 local command_customize_setting_id = mod.command_customize_setting_id
 local command_message_setting_id = mod.command_message_setting_id
+local label_loc_keys = mod.label_loc_keys
+local labels = mod.labels
 local CLOCK_SLOTS = mod.clock_slots
 local CLOCK_WHEEL_SLOT_COUNT = #CLOCK_SLOTS
 local VANILLA_WHEEL_SLOT_COUNT = HudElementSmartTaggingSettings.wheel_slots
@@ -105,41 +107,12 @@ local vanilla_wheel_command_ids = {
     [27] = true,
 }
 
--- Prefer stock loc keys where possible so players without the mod still resolve the chat line correctly.
-local stock_chat_loc_keys_by_display_name = {
-    option_ammo = "loc_pickup_consumable_small_clip_01",
-    option_ammo_crate = "loc_pickup_pocketable_ammo_crate_01",
-    option_cryonic_rod = "loc_pickup_luggable_control_rod_01",
-    option_diamantine = "loc_pickup_small_platinum",
-    option_following = "loc_reply_smart_tag_follow",
-    option_grenade = "loc_pickup_consumable_small_grenade_01",
-    option_grimoire = "loc_pickup_side_mission_pocketable_01",
-    option_health_booster = "loc_pickup_pocketable_01",
-    option_medipack = "loc_pickup_pocketable_medical_crate_01",
-    option_medipack_down = "loc_pickup_deployable_medical_crate_01",
-    option_mine = "loc_reply_smart_tag_dibs",
-    option_plasteel = "loc_pickup_small_metal",
-    option_power_cell = "loc_pickup_luggable_battery_01",
-    option_relic = "loc_pickup_side_mission_consumable_01",
-    option_scripture = "loc_pickup_side_mission_pocketable_02",
-    option_yes = "loc_reply_smart_tag_ok",
-}
-
+-- A mod command's default chat message is its label: the subtitle of its own voice line (see ForDaEmprah_data.lua).
+-- The game always loads its subtitles, so every player reads the line in their own language, mod or not.
 local function _optional_chat_message_data(display_name)
-    local stock_loc_key = stock_chat_loc_keys_by_display_name[display_name]
-
-    if not stock_loc_key then
-        return {
-            channel = ChannelTags.MISSION,
-            text = display_name,
-            localized = false,
-            localize_text = true,
-        }
-    end
-
     return {
         channel = ChannelTags.MISSION,
-        text = stock_loc_key,
+        text = label_loc_keys[display_name],
     }
 end
 
@@ -427,13 +400,9 @@ local function _custom_chat_message(setting_ids)
     return message ~= "" and message or nil
 end
 
--- The default message as the local player reads it. Stock loc keys need the game's localization, which
--- returns "" until its strings are loaded.
+-- The default message as the local player reads it. Its loc key needs the game's localization, which returns ""
+-- until its strings are loaded.
 local function _default_chat_text(chat_message_data)
-    if chat_message_data.localized == false then
-        return mod:localize(chat_message_data.text)
-    end
-
     return type(Localize) == "function" and Localize(chat_message_data.text) or ""
 end
 
@@ -492,8 +461,9 @@ local function _configured_command(command_id)
     else
         local custom_message = _custom_chat_message(setting_ids)
 
-        -- Sent as typed; localized = false also routes wheel picks through _execute_command.
-        if custom_message then
+        -- Text left as the default it was filled with still goes out as the default, so it stays localized per
+        -- player. Anything else is sent as typed; localized = false also routes wheel picks through _execute_command.
+        if custom_message and custom_message ~= _default_chat_text(chat_message_data) then
             configured_command.chat_message_data = {
                 channel = chat_message_data.channel,
                 text = custom_message,
@@ -697,13 +667,7 @@ local function _send_chat_message(chat_message_data)
     end
 
     if chat_message_data.localized == false then
-        local text = chat_message_data.text
-
-        if chat_message_data.localize_text then
-            text = mod:localize(text)
-        end
-
-        chat_manager:send_channel_message(channel_handle, text)
+        chat_manager:send_channel_message(channel_handle, chat_message_data.text)
     else
         chat_manager:send_loc_channel_message(channel_handle, chat_message_data.text, chat_message_data.context)
     end
@@ -897,7 +861,7 @@ local function _uses_custom_execution(command)
 
     local chat_message_data = command.chat_message_data
 
-    -- Vanilla wheel execution always sends chat as a stock loc key, so mod-localized chat must go through _execute_command.
+    -- Vanilla wheel execution always sends chat as a stock loc key, so custom (typed) chat must go through _execute_command.
     return chat_message_data ~= nil and chat_message_data.localized == false
 end
 
@@ -1019,7 +983,7 @@ mod:hook("HudElementSmartTagging", "_update_wheel_presentation",
         wheel_background_mark_color[1] = any_hover and 255 or 0
 
         if hovered_entry then
-            wheel_background_content.text = mod:localize(hovered_entry.option.display_name)
+            wheel_background_content.text = labels[hovered_entry.option.display_name]
         end
     end)
 
