@@ -2,10 +2,10 @@
 -- The returned table names the mod, makes it togglable and declares two groups, which DMF shows as
 -- native tabs. `Browser`: the Open Icon Browser keybind (F8 by default, a global `function_call`
 -- keybind of `toggle_icon_browser`), Thumbnail Density, Inspector Width, Double-Click Copies Path,
--- C Key Copies Path, two buttons that clear the recent history and, held to confirm, the favorites,
--- and a button that copies the paths of the icons whose material is not loaded. `Window`: the
--- frame's Window Size, X and Y position, a button that centres it again,
--- the move step and four optional move keybinds.
+-- C Key Copies Path, UI Snippet Format, two buttons that clear the recent history and, held to
+-- confirm, the favorites, and a button that copies the paths of the icons whose material is not
+-- loaded. `Window`: the frame's Window Size, X and Y position, a button that centres it again, the
+-- move step and four optional move keybinds.
 --
 -- Titles come from each `setting_id`, tooltips and button texts are localization ids that DMF
 -- resolves. The settings are read through the getters in `IconBrowser.lua`, which clamp or validate
@@ -63,6 +63,16 @@ local browser_widgets = {
         type = "checkbox",
         default_value = true,
         tooltip = "copy_hotkey_tooltip",
+    },
+    {
+        setting_id = "icon_browser_snippet_format",
+        type = "dropdown",
+        default_value = "pass",
+        options = {
+            { text = "snippet_format_pass", value = "pass" },
+            { text = "snippet_format_widget", value = "widget" },
+        },
+        tooltip = "snippet_format_tooltip",
     },
     {
         setting_id = "clear_icon_browser_recent",

@@ -410,6 +410,7 @@ IconBrowserView.init = function(self, settings)
         filename = mod:localize("status_copied_filename"),
         lua_string = mod:localize("status_copied_lua_string"),
         ui_snippet = mod:localize("status_copied_ui_snippet"),
+        widget_definition = mod:localize("status_copied_widget_definition"),
         sources = mod:localize("status_copied_sources"),
         failed = mod:localize("status_copy_failed"),
         favorite_added = mod:localize("status_favorite_added"),
@@ -2093,7 +2094,8 @@ function IconBrowserView._copy_selection(self, copy_format)
 end
 
 --- Copies a format of the selected asset, records it in the recent history and shows the status.
--- With several assets selected, the bulk format of `BULK_COPY_FORMATS` is copied instead.
+-- `ui_snippet` copies the format the UI Snippet Format setting chooses. With several assets selected,
+-- the bulk format of `BULK_COPY_FORMATS` is copied instead.
 -- string: copy_format `path`, `filename`, `lua_string`, `ui_snippet` or `sources`
 function IconBrowserView._copy_selected(self, copy_format)
     local asset = self._selected_asset
@@ -2107,6 +2109,7 @@ function IconBrowserView._copy_selected(self, copy_format)
     end
 
     local copied
+    local status_id = copy_format
 
     if copy_format == "path" then
         copied = mod.copy_icon_path_to_clipboard(asset.id, asset.path)
@@ -2118,7 +2121,14 @@ function IconBrowserView._copy_selected(self, copy_format)
         copied = mod.copy_icon_text_to_clipboard(asset.id, Assets.source_reference_text(asset), "source references",
             asset.path)
     else
-        copied = mod.copy_icon_text_to_clipboard(asset.id, Assets.ui_snippet(asset), "Lua UI snippet", asset.path)
+        local snippet_format = mod.get_icon_browser_snippet_format()
+
+        if snippet_format == "widget" then
+            status_id = "widget_definition"
+        end
+
+        copied = mod.copy_icon_text_to_clipboard(asset.id, Assets.ui_snippet(asset, snippet_format),
+            snippet_format == "widget" and "Lua widget definition" or "Lua UI snippet", asset.path)
     end
 
     if copied then
@@ -2127,7 +2137,7 @@ function IconBrowserView._copy_selected(self, copy_format)
 
     local status_text = self._status_text
 
-    self:_set_copy_status(copied and status_text[copy_format] or status_text.failed, not copied)
+    self:_set_copy_status(copied and status_text[status_id] or status_text.failed, not copied)
 end
 
 --- Returns whether every selected asset is a favorite.

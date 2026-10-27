@@ -1,7 +1,7 @@
 {
   "name": "Icon Browser",
-  "description": "Developer tool for mod authors: a full-screen in-game browser for Darktide's UI icon materials. Search, filter and sort the indexed icons, inspect a large preview with the full material path, and copy the path, filename, a Lua string or a ready-to-use UI texture snippet for your own mods. Not a gameplay mod.",
-  "version": "2.0.0",
+  "description": "Developer tool for mod authors: a full-screen in-game browser for Darktide's UI icon materials. Search, filter and sort the indexed icons, inspect a large preview with the full material path and where the game uses it, find related icons, and copy paths, filenames, Lua strings, Lua tables or ready-to-use UI snippets for your own mods. Not a gameplay mod.",
+  "version": "2.1.0",
   "author": "LucLeto",
   "homepage": "https://www.nexusmods.com/warhammer40kdarktide/mods/820",
   "source": "https://github.com/LucLeto/darktide-mods-icon-browser",

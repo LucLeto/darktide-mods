@@ -32,8 +32,9 @@
 -- `search_extra` the lower-case script files and item names it is found under, else "";
 -- `search_blob` lower-case path, the path with `_`, `-` and `/` read as spaces, the names, `#id` and
 -- `search_extra`, separated by `|`;
--- `lua_string`, `ui_snippet` the copy formats, built on first use, else false. Several selected
--- assets are copied with `field_lines`, `lua_array` and `lua_table`.
+-- `lua_string` the quoted path, built on first use, else false. UI snippets are built on each copy
+-- by `ui_snippet`, several selected assets are copied with `field_lines`, `lua_array` and
+-- `lua_table`.
 --
 -- Loaded through `mod:io_dofile` by `IconBrowser.lua` and stored as `mod._assets_module`; the
 -- model built by `build` is stored as `mod._assets`.
@@ -126,19 +127,60 @@ local VARIANT_SUFFIXES = {
     xl = true,
 }
 
---- Lua UI snippet copied for an asset: a texture pass for `UIWidget.create_definition`, with the
--- material path as `%s`.
-local UI_SNIPPET_FORMAT = [[{
+--- Lua UI snippet formats, by the id the Snippet Format setting stores: `pass` a texture pass for
+-- `UIWidget.create_definition` (material path, width, height, size comment); `widget` a scenegraph
+-- node and a widget definition drawing the material in it (node name, width, height, size comment,
+-- widget name, material path, node name).
+Assets.UI_SNIPPET_FORMATS = {
+    pass = [[{
     pass_type = "texture",
     style_id = "icon",
     value = "%s",
     style = {
         horizontal_alignment = "center",
         vertical_alignment = "center",
-        size = { 64, 64 },
+        size = { %d, %d },%s
         color = { 255, 255, 255, 255 },
     },
-},]]
+},]],
+    widget = [[-- scenegraph_definition
+%s = {
+    parent = "screen",
+    horizontal_alignment = "center",
+    vertical_alignment = "center",
+    size = { %d, %d },%s
+    position = { 0, 0, 1 },
+},
+
+-- widget_definitions
+%s = UIWidget.create_definition({
+    {
+        pass_type = "texture",
+        style_id = "icon",
+        value_id = "icon",
+        value = "%s",
+        style = {
+            color = { 255, 255, 255, 255 },
+        },
+    },
+}, "%s"),]],
+}
+
+--- Snippet format used for an unknown format id.
+local DEFAULT_UI_SNIPPET_FORMAT = "pass"
+--- Size written into a snippet when the game draws the asset at no known size, and the comments
+-- that say where the size came from.
+local DEFAULT_SNIPPET_SIZE = 64
+local SNIPPET_SIZE_KNOWN = " -- the size the game draws it at"
+local SNIPPET_SIZE_UNKNOWN = " -- no size known from the game, set your own"
+
+--- Lua keywords, which cannot be bare table keys or names.
+local LUA_KEYWORDS = {
+    ["and"] = true, ["break"] = true, ["do"] = true, ["else"] = true, ["elseif"] = true, ["end"] = true,
+    ["false"] = true, ["for"] = true, ["function"] = true, ["goto"] = true, ["if"] = true, ["in"] = true,
+    ["local"] = true, ["nil"] = true, ["not"] = true, ["or"] = true, ["repeat"] = true, ["return"] = true,
+    ["then"] = true, ["true"] = true, ["until"] = true, ["while"] = true,
+}
 
 -- ----------------------------------------------------------------------------
 -- Derived fields
@@ -310,7 +352,6 @@ function Assets.build(paths, mod)
             search_extra = "",
             search_blob = "",
             lua_string = false,
-            ui_snippet = false,
         }
 
         asset.search_blob = _search_blob(asset, nil, nil)
@@ -749,28 +790,43 @@ function Assets.lua_string(asset)
     return text
 end
 
---- Returns a texture pass snippet for the asset's material (`UI_SNIPPET_FORMAT`), cached on the
--- asset.
+--- Returns a Lua name for the asset's scenegraph node and widget: its filename with other characters
+-- than letters, digits and `_` replaced, prefixed with `icon_` when it would start with a digit or
+-- be a keyword.
 -- tab: asset asset record
 -- treturn: string
-function Assets.ui_snippet(asset)
-    local text = asset.ui_snippet
+local function _snippet_name(asset)
+    local name = gsub(lower(asset.filename), "[^%w_]", "_")
 
-    if not text then
-        text = format(UI_SNIPPET_FORMAT, asset.path)
-        asset.ui_snippet = text
+    if find(name, "^%d") or LUA_KEYWORDS[name] then
+        name = "icon_" .. name
     end
 
-    return text
+    return name
 end
 
---- Lua keywords, which cannot be bare table keys.
-local LUA_KEYWORDS = {
-    ["and"] = true, ["break"] = true, ["do"] = true, ["else"] = true, ["elseif"] = true, ["end"] = true,
-    ["false"] = true, ["for"] = true, ["function"] = true, ["goto"] = true, ["if"] = true, ["in"] = true,
-    ["local"] = true, ["nil"] = true, ["not"] = true, ["or"] = true, ["repeat"] = true, ["return"] = true,
-    ["then"] = true, ["true"] = true, ["until"] = true, ["while"] = true,
-}
+--- Returns a Lua UI snippet for the asset's material in one of `UI_SNIPPET_FORMATS`, sized to the
+-- size the game draws it at, or `DEFAULT_SNIPPET_SIZE` square with a comment when none is known.
+-- tab: asset asset record
+-- ?string: snippet_format `pass` (default) or `widget`
+-- treturn: string
+function Assets.ui_snippet(asset, snippet_format)
+    local width, height = asset.usage_width, asset.usage_height
+    local size_comment = SNIPPET_SIZE_KNOWN
+
+    if width <= 0 or height <= 0 then
+        width, height = DEFAULT_SNIPPET_SIZE, DEFAULT_SNIPPET_SIZE
+        size_comment = SNIPPET_SIZE_UNKNOWN
+    end
+
+    if snippet_format == "widget" then
+        local name = _snippet_name(asset)
+
+        return format(Assets.UI_SNIPPET_FORMATS.widget, name, width, height, size_comment, name, asset.path, name)
+    end
+
+    return format(Assets.UI_SNIPPET_FORMATS[DEFAULT_UI_SNIPPET_FORMAT], asset.path, width, height, size_comment)
+end
 
 --- Returns one field of several assets, one per line, in the given order.
 -- tab: list array of asset records
