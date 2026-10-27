@@ -601,6 +601,7 @@ function Definitions.create(upper)
         copy_snippet_button = _node("inspector_panel", 3),
         copy_sources_button = _node("inspector_panel", 3),
         favorite_button = _node("inspector_panel", 3),
+        related_button = _node("inspector_panel", 3),
         status_bar = _node("frame", 2),
         hint_text = _node("status_bar", 1),
         popup = _node("frame", 100),
@@ -759,6 +760,9 @@ function Definitions.create(upper)
             { text = { font_size = SECONDARY_BUTTON_FONT_SIZE } }),
         favorite_button = UIWidget.create_definition(ButtonPassTemplates.terminal_button_small, "favorite_button", {
             text = "",
+        }, nil, { text = { font_size = SECONDARY_BUTTON_FONT_SIZE } }),
+        related_button = UIWidget.create_definition(ButtonPassTemplates.terminal_button_small, "related_button", {
+            text = upper(mod:localize("action_related")),
         }, nil, { text = { font_size = SECONDARY_BUTTON_FONT_SIZE } }),
         status_divider = UIWidget.create_definition({
             {

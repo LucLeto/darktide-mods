@@ -5,14 +5,19 @@
 -- count and toolbar (search field, category and sort menus, favorites and recent filters, grid/list
 -- and density toggles), the asset browser and a persistent inspector with preview, metadata, the
 -- asset's source references (the script lines and items that use it, and the size the game draws
--- it at, which the preview's `auto` aspect follows) and copy actions.
+-- it at, which the preview's `auto` aspect follows) and copy actions. Its Related menu lists the
+-- asset's family, folder, filename twins and the scripts naming it, with counts, and applies the chosen
+-- one as an `in:`, `family:`, `filename:` or `file:` filter in the search field.
 --
 -- The browser is virtualized: a pool of slot widgets covering the visible cells is rebuilt only when
 -- the slot geometry changes and rebound to the window of query results the scrollbar shows, with
 -- row-snapped scrolling. A click selects an asset, which fills the inspector; copying is explicit
--- (inspector buttons, double-click, Ctrl+C or C). Arrow keys move a keyboard focus that Enter
--- selects, Ctrl+F focuses the search field, F toggles the favorite, and Esc leaves the search field,
--- then an open menu, then the view; no shortcut fires while the search field has focus.
+-- (inspector buttons, double-click, Ctrl+C or C). Ctrl+click, Shift+click and Ctrl+A select several
+-- assets; the inspector then previews the one clicked last, lists the selection and copies all of
+-- them at once (paths, filenames, a Lua array or a Lua table keyed by filename). Arrow keys move a
+-- keyboard focus that Enter selects, Ctrl+F focuses the search field, F toggles the favorite, and
+-- Esc leaves the search field, then an open menu, then a multi-selection, then the view; no
+-- shortcut fires while the search field has focus.
 --
 -- Every widget that draws an indexed material (tiles, list rows, the inspector preview) is drawn
 -- inside `pcall`; a failing material is reported once through `mod.mark_icon_render_failed`, shown
@@ -127,7 +132,15 @@ local INSPECTOR_ACTION_WIDGETS = {
     "copy_snippet_button",
     "copy_sources_button",
     "favorite_button",
+    "related_button",
 }
+
+--- Script files listed in the Related menu at most, and the menu's width range in UI units.
+local MAX_RELATED_FILES = 6
+local RELATED_MIN_WIDTH = 320
+local RELATED_MAX_WIDTH = 640
+--- Empty favorites and recent lookups for counting relations without those filters.
+local EMPTY_LOOKUP = {}
 
 --- Widgets of the list column header, shown only in the list view.
 local LIST_HEADER_WIDGETS = {
@@ -196,9 +209,21 @@ end
 --- Keyboard indices cached by `_keyboard_keys_lookup`; nil until its first call.
 local _keyboard_keys
 
---- Raw keyboard indices for Ctrl+F / Ctrl+C, resolved once; `false` when the engine API is missing.
--- A missing right Ctrl key only disables that key.
--- treturn: tab|bool `left_ctrl`, `right_ctrl`, `f` and `c` indices, or false
+--- Returns a keyboard index, or false when the engine does not know the key.
+-- func: button_index `Keyboard.button_index`
+-- string: name key name
+-- treturn: int|bool
+local function _optional_key(button_index, name)
+    local ok, index = pcall(button_index, name)
+
+    return ok and index or false
+end
+
+--- Raw keyboard indices for Ctrl+F / Ctrl+C / Ctrl+A and the Ctrl and Shift modifiers of a click,
+-- resolved once; `false` when the engine API is missing. A missing right Ctrl or Shift key only
+-- disables that key, a missing A key only Ctrl+A.
+-- treturn: tab|bool `left_ctrl`, `right_ctrl`, `left_shift`, `right_shift`, `f`, `c` and `a`
+-- indices, or false
 local function _keyboard_keys_lookup()
     if _keyboard_keys == nil then
         _keyboard_keys = false
@@ -210,14 +235,16 @@ local function _keyboard_keys_lookup()
             local ok, left_ctrl, key_f, key_c = pcall(function()
                 return button_index("left ctrl"), button_index("f"), button_index("c")
             end)
-            local right_ok, right_ctrl = pcall(button_index, "right ctrl")
 
             if ok and left_ctrl and key_f and key_c then
                 _keyboard_keys = {
                     left_ctrl = left_ctrl,
-                    right_ctrl = right_ok and right_ctrl or false,
+                    right_ctrl = _optional_key(button_index, "right ctrl"),
+                    left_shift = _optional_key(button_index, "left shift"),
+                    right_shift = _optional_key(button_index, "right shift"),
                     f = key_f,
                     c = key_c,
+                    a = _optional_key(button_index, "a"),
                 }
             end
         end
@@ -226,19 +253,28 @@ local function _keyboard_keys_lookup()
     return _keyboard_keys
 end
 
+--- Returns whether either of two keys is held.
+-- int|bool: left_key keyboard index, or false
+-- int|bool: right_key keyboard index, or false
+-- treturn: bool
+local function _either_down(left_key, right_key)
+    local keyboard = Keyboard
+
+    return left_key and keyboard.button(left_key) > 0.5 or right_key and keyboard.button(right_key) > 0.5 or false
+end
+
 --- Returns whether either Ctrl key is held.
 -- tab: keys indices from `_keyboard_keys_lookup`
 -- treturn: bool
 local function _ctrl_down(keys)
-    local keyboard = Keyboard
+    return _either_down(keys.left_ctrl, keys.right_ctrl)
+end
 
-    if keyboard.button(keys.left_ctrl) > 0.5 then
-        return true
-    end
-
-    local right_ctrl = keys.right_ctrl
-
-    return right_ctrl and keyboard.button(right_ctrl) > 0.5 or false
+--- Returns whether either Shift key is held.
+-- tab: keys indices from `_keyboard_keys_lookup`
+-- treturn: bool
+local function _shift_down(keys)
+    return _either_down(keys.left_shift, keys.right_shift)
 end
 
 --- The view class.
@@ -330,15 +366,24 @@ IconBrowserView.init = function(self, settings)
     self._entered_browser = false
 
     self._selected_asset = nil
+    self._selection = {}
+    self._selection_list = {}
+    self._selection_count = 0
+    self._selection_anchor = nil
+    self._selection_ordered = {}
     self._focus_asset = nil
     self._focus_index = nil
     self._icon_lists_revision = -1
 
     self._open_popup = nil
     self._swallow_input = false
-    self._popup_options = { category = {}, sort = {} }
-    self._popup_option_counts = { category = 0, sort = 0 }
-    self._popup_widths = { category = 0, sort = 0 }
+    self._popup_options = { category = {}, sort = {}, related = {} }
+    self._popup_option_counts = { category = 0, sort = 0, related = 0 }
+    self._popup_widths = { category = 0, sort = 0, related = 0 }
+    self._related_tokens = {}
+    self._related_state = Query.new_state()
+    self._related_results = {}
+    self._related_result_count = 0
 
     self._preview_widgets = {}
     self._preview_background = "dark"
@@ -370,6 +415,19 @@ IconBrowserView.init = function(self, settings)
         favorite_added = mod:localize("status_favorite_added"),
         favorite_removed = mod:localize("status_favorite_removed"),
         recent_cleared = mod:localize("status_recent_cleared"),
+    }
+    -- labels of the copy and favorite buttons for one selected asset and for several
+    self._action_texts = {
+        filename = upper(mod:localize("action_copy_filename")),
+        lua_string = upper(mod:localize("action_copy_lua_string")),
+        ui_snippet = upper(mod:localize("action_copy_ui_snippet")),
+        filenames = upper(mod:localize("action_copy_filenames")),
+        lua_array = upper(mod:localize("action_copy_lua_array")),
+        lua_table = upper(mod:localize("action_copy_lua_table")),
+        favorite_add = upper(mod:localize("action_favorite_add")),
+        favorite_remove = upper(mod:localize("action_favorite_remove")),
+        favorite_add_all = upper(mod:localize("action_favorite_add_all")),
+        favorite_remove_all = upper(mod:localize("action_favorite_remove_all")),
     }
     self._field_labels = {
         path = LABEL_TAG .. upper(mod:localize("field_path")) .. RESET_TAG,
@@ -554,6 +612,7 @@ function IconBrowserView._setup_callbacks(self)
     self:_bind_button("copy_snippet_button", "cb_on_copy_pressed", "ui_snippet")
     self:_bind_button("copy_sources_button", "cb_on_copy_pressed", "sources")
     self:_bind_button("favorite_button", "cb_on_favorite_pressed")
+    self:_bind_button("related_button", "cb_on_related_pressed")
 end
 
 --- Restores the persisted filter preferences and the session's search text and selection.
@@ -577,8 +636,7 @@ function IconBrowserView._restore_state(self)
 
     local selected_asset = session.selected_path and self._assets.by_path[session.selected_path] or nil
 
-    self._selected_asset = selected_asset
-    self._focus_asset = selected_asset
+    self:_select_asset(selected_asset, nil, false)
     self._results_dirty = true
     self._reset_scroll = true
     self._keep_selection_visible = selected_asset ~= nil
@@ -658,8 +716,11 @@ function IconBrowserView._apply_layout(self, force)
 
     local browser_width = inner_width - LAYOUT.gap - inspector_width
 
+    local hint_widget = self._widgets_by_name.hint_text
+
     self:_place("status_bar", padding, status_y, inner_width, LAYOUT.status_height)
     self:_place("hint_text", 0, 0, inner_width, LAYOUT.status_height)
+    hint_widget.content.text = self:_fit_text(mod:localize("shortcut_hint"), hint_widget.style.text, inner_width, false)
     self:_place("browser_panel", padding, content_y, browser_width, content_height)
     self:_place("inspector_panel", padding + browser_width + LAYOUT.gap, content_y, inspector_width, content_height)
     layout.browser_x = padding
@@ -954,7 +1015,8 @@ function IconBrowserView._layout_inspector(self, width, height)
     self:_place("copy_lua_button", right_x, first_row_y, right_width, secondary_height)
     self:_place("copy_snippet_button", padding, second_row_y, half_width, secondary_height)
     self:_place("copy_sources_button", right_x, second_row_y, right_width, secondary_height)
-    self:_place("favorite_button", padding, third_row_y, inner_width, secondary_height)
+    self:_place("favorite_button", padding, third_row_y, half_width, secondary_height)
+    self:_place("related_button", right_x, third_row_y, right_width, secondary_height)
 
     local preview_top = y
     local controls_height = inspector.controls_height
@@ -1045,24 +1107,32 @@ end
 -- Popup menus
 -- ----------------------------------------------------------------------------
 
---- Destroys the option widgets of both popup menus.
-function IconBrowserView._destroy_popup_options(self)
+--- Destroys the option widgets of one popup menu.
+-- string: popup_id `category`, `sort` or `related`
+function IconBrowserView._destroy_popup_menu_options(self, popup_id)
     local ui_renderer = self._ui_renderer
+    local options = self._popup_options[popup_id]
 
-    for popup_id, options in pairs(self._popup_options) do
-        for i = 1, self._popup_option_counts[popup_id] do
-            UIWidget.destroy(ui_renderer, options[i])
-            options[i] = nil
-        end
+    for i = 1, self._popup_option_counts[popup_id] do
+        UIWidget.destroy(ui_renderer, options[i])
+        options[i] = nil
+    end
 
-        self._popup_option_counts[popup_id] = 0
+    self._popup_option_counts[popup_id] = 0
+end
+
+--- Destroys the option widgets of every popup menu.
+function IconBrowserView._destroy_popup_options(self)
+    for popup_id in pairs(self._popup_options) do
+        self:_destroy_popup_menu_options(popup_id)
     end
 end
 
 --- Builds the options of the category menu, each labelled with its asset count, and of the sort
--- menu, at least as wide as their toolbar buttons.
+-- menu, at least as wide as their toolbar buttons. The Related menu is built when it opens.
 function IconBrowserView._build_popup_options(self)
-    self:_destroy_popup_options()
+    self:_destroy_popup_menu_options("category")
+    self:_destroy_popup_menu_options("sort")
 
     local option_height = LAYOUT.popup_option_height
     local assets = self._assets
@@ -1110,18 +1180,140 @@ function IconBrowserView._build_popup_options(self)
     self._popup_widths.sort = sort_width
 end
 
---- Opens a popup menu below its toolbar button; leaves the search field and closes any other menu
--- and the tooltip first.
--- string: popup_id `category` or `sort`
+--- Returns how many assets a search filter shows, counted without the category, favorites and recent
+-- filters, as applying it from the Related menu switches those off.
+-- string: token `kind:value` filter from `Query.filter_token`
+-- treturn: int
+function IconBrowserView._relation_size(self, token)
+    local state = self._related_state
+
+    Query.set_text(state, token)
+
+    local count = Query.run(state, self._assets, self._query_cache, EMPTY_LOOKUP, EMPTY_LOOKUP, self._related_results,
+        self._related_result_count)
+
+    self._related_result_count = count
+
+    return count
+end
+
+--- Adds an entry to the Related menu when its filter shows more than the asset itself.
+-- tab: labels array the entry's label is added to
+-- int: count entries so far
+-- string: token `kind:value` filter the entry applies
+-- string: text_id localization id of the label, formatted with `value`
+-- string: value shown value
+-- treturn: int entries afterwards
+function IconBrowserView._add_relation(self, labels, count, token, text_id, value)
+    local size = self:_relation_size(token)
+
+    if size < 2 then
+        return count
+    end
+
+    count = count + 1
+    self._related_tokens[count] = token
+    labels[count] = format("%s  (%d)", mod:localize(text_id, value), size)
+
+    return count
+end
+
+--- Builds the Related menu of an asset: its family, its folder (with subfolders), the same filename
+-- in other folders, and each game script that names it, each with its asset count. An asset without
+-- relatives gets a single entry that says so and does nothing.
+-- tab: asset selected asset
+function IconBrowserView._build_related_options(self, asset)
+    self:_destroy_popup_menu_options("related")
+
+    local tokens = self._related_tokens
+    local labels = {}
+    local count = 0
+
+    table_clear(tokens)
+
+    if asset.family_size > 1 then
+        count = self:_add_relation(labels, count, Query.filter_token("family", asset.family), "related_family",
+            match(asset.family, "([^/]+)$") or asset.family)
+    end
+
+    if asset.directory ~= "" then
+        count = self:_add_relation(labels, count, Query.filter_token("in", asset.directory), "related_folder",
+            asset.directory)
+    end
+
+    if asset.filename_count > 1 then
+        count = self:_add_relation(labels, count, Query.filter_token("filename", asset.filename), "related_filename",
+            asset.filename)
+    end
+
+    local files = asset.ref_files
+
+    if files then
+        for i = 1, min(#files, MAX_RELATED_FILES) do
+            local file_name = match(files[i], "([^/]+)$") or files[i]
+
+            count = self:_add_relation(labels, count, Query.filter_token("file", file_name), "related_file", file_name)
+        end
+    end
+
+    if count == 0 then
+        count = 1
+        labels[1] = mod:localize("related_none")
+    end
+
+    local option_height = LAYOUT.popup_option_height
+    local text_style = Definitions.option_definition(RELATED_MAX_WIDTH, option_height).style.text
+    local width = RELATED_MIN_WIDTH
+
+    for i = 1, count do
+        width = max(width, (self:_text_width(labels[i], text_style) or 0) + 32 + CROP_MARGIN * 2)
+    end
+
+    width = min(floor(width), RELATED_MAX_WIDTH, self._layout.frame_width - LAYOUT.padding * 2)
+
+    local definition = Definitions.option_definition(width, option_height)
+    local options = self._popup_options.related
+
+    for i = 1, count do
+        local widget = UIWidget.init("related_option_" .. i, definition)
+        local content = widget.content
+
+        widget.offset[2] = 6 + (i - 1) * option_height
+        content.text = self:_fit_text(labels[i], widget.style.text, width - 32, false)
+        content.option_id = i
+        content.is_selected = false
+        content.hotspot.pressed_callback = callback(self, "cb_on_related_option_pressed", i)
+        options[i] = widget
+    end
+
+    self._popup_option_counts.related = count
+    self._popup_widths.related = width
+end
+
+--- Opens a popup menu below its toolbar button, or the Related menu above the inspector's Related
+-- button; leaves the search field and closes any other menu and the tooltip first.
+-- string: popup_id `category`, `sort` or `related`
 function IconBrowserView._open_popup_menu(self, popup_id)
     self:_stop_search_input()
     self:_close_popup()
 
-    local button_node = self._ui_scenegraph[popup_id .. "_button"]
+    local ui_scenegraph = self._ui_scenegraph
+    local button_node = ui_scenegraph[popup_id .. "_button"]
     local width = self._popup_widths[popup_id]
     local height = self._popup_option_counts[popup_id] * LAYOUT.popup_option_height + 12
-    local x = min(button_node.position[1], self._layout.frame_width - LAYOUT.padding - width)
-    local y = button_node.position[2] + button_node.size[2] + 4
+    local x, y
+
+    if popup_id == "related" then
+        local panel_position = ui_scenegraph.inspector_panel.position
+
+        x = panel_position[1] + button_node.position[1] + button_node.size[1] - width
+        y = max(LAYOUT.padding, panel_position[2] + button_node.position[2] - height - 4)
+    else
+        x = button_node.position[1]
+        y = button_node.position[2] + button_node.size[2] + 4
+    end
+
+    x = min(x, self._layout.frame_width - LAYOUT.padding - width)
 
     self:_place("popup", max(LAYOUT.padding, x), y, width, height)
     self:_force_update_scenegraph()
@@ -1146,7 +1338,8 @@ function IconBrowserView._close_popup(self)
     self._widgets_by_name[popup_id .. "_button"].content.hotspot.is_selected = false
 end
 
---- Marks the option of the open menu that matches the active category or sort.
+--- Marks the option of the open menu that matches the active category or sort; the Related menu
+-- has no active option.
 function IconBrowserView._refresh_popup_selection(self)
     local popup_id = self._open_popup
 
@@ -1155,7 +1348,7 @@ function IconBrowserView._refresh_popup_selection(self)
     end
 
     local state = self._query_state
-    local active_id = popup_id == "category" and state.category or state.sort
+    local active_id = popup_id == "category" and state.category or popup_id == "sort" and state.sort or nil
     local options = self._popup_options[popup_id]
 
     for i = 1, self._popup_option_counts[popup_id] do
@@ -1354,9 +1547,11 @@ function IconBrowserView._run_query(self)
     if count == 0 then
         local message_id = "empty_results"
 
-        if state.term_count == 0 and state.favorites_only then
+        local unfiltered = state.term_count == 0 and state.filter_count == 0
+
+        if unfiltered and state.favorites_only then
             message_id = "empty_favorites"
-        elseif state.term_count == 0 and state.recent_only then
+        elseif unfiltered and state.recent_only then
             message_id = "empty_recent"
         end
 
@@ -1571,7 +1766,7 @@ function IconBrowserView._bind_slots(self)
     local results = self._results
     local result_count = self._result_count
     local base_index = max(self._first_row, 0) * self._columns
-    local selected_asset = self._selected_asset
+    local selection = self._selection
     local focus_asset = self._focus_asset
     local favorites = mod._favorite_lookup
     local is_grid = self._slot_kind == "grid"
@@ -1618,7 +1813,7 @@ function IconBrowserView._bind_slots(self)
 
             content.result_index = index
             content.has_asset = true
-            content.is_selected = asset == selected_asset
+            content.is_selected = selection[asset] == true
             content.is_focused = asset == focus_asset
             content.is_favorite = favorites[asset.path] == true
             content.is_odd = index % 2 == 1
@@ -1641,22 +1836,196 @@ end
 -- Selection, focus and actions
 -- ----------------------------------------------------------------------------
 
---- Selects an asset, which also moves the keyboard focus to it, and refreshes the slots and the
--- inspector; the clipboard is never touched.
--- ?tab: asset asset record, nil to clear the selection
+--- Sets the primary selection, the asset the inspector previews and single actions use, moves the
+-- keyboard focus to it and refreshes the slots and the inspector.
+-- ?tab: asset asset record
 -- ?int: index its position in the results
--- ?bool: record_recent add it to the recent history
-function IconBrowserView._select_asset(self, asset, index, record_recent)
+function IconBrowserView._set_primary(self, asset, index)
     self._selected_asset = asset
     self._focus_asset = asset
     self._focus_index = index
     self._bind_dirty = true
     self._inspector_dirty = true
     mod._icon_browser_session.selected_path = asset and asset.path or false
+end
+
+--- Adds an asset to the selection, after the assets selected before it.
+-- tab: asset asset record
+function IconBrowserView._add_to_selection(self, asset)
+    local selection = self._selection
+
+    if selection[asset] then
+        return
+    end
+
+    local count = self._selection_count + 1
+
+    selection[asset] = true
+    self._selection_list[count] = asset
+    self._selection_count = count
+end
+
+--- Removes an asset from the selection.
+-- tab: asset asset record
+function IconBrowserView._remove_from_selection(self, asset)
+    local selection = self._selection
+
+    if not selection[asset] then
+        return
+    end
+
+    local list = self._selection_list
+    local count = self._selection_count
+
+    selection[asset] = nil
+
+    for i = 1, count do
+        if list[i] == asset then
+            table.remove(list, i)
+
+            break
+        end
+    end
+
+    self._selection_count = count - 1
+end
+
+--- Empties the selection.
+function IconBrowserView._clear_selection(self)
+    table_clear(self._selection)
+    table_clear(self._selection_list)
+    self._selection_count = 0
+end
+
+--- Selects only this asset, which also becomes the anchor of a Shift range, and refreshes the slots
+-- and the inspector; the clipboard is never touched.
+-- ?tab: asset asset record, nil to clear the selection
+-- ?int: index its position in the results
+-- ?bool: record_recent add it to the recent history
+function IconBrowserView._select_asset(self, asset, index, record_recent)
+    self:_clear_selection()
+
+    if asset then
+        self:_add_to_selection(asset)
+    end
+
+    self._selection_anchor = asset
+    self:_set_primary(asset, index)
 
     if asset and record_recent then
         mod.record_recent_icon(asset.path)
     end
+end
+
+--- Ctrl+click: adds the asset to the selection or removes it. An added asset becomes the primary
+-- selection and the anchor; removing the primary hands it to the asset selected last.
+-- tab: asset asset record
+-- ?int: index its position in the results
+function IconBrowserView._toggle_in_selection(self, asset, index)
+    if self._selection[asset] then
+        self:_remove_from_selection(asset)
+
+        local count = self._selection_count
+        local primary = self._selected_asset
+
+        if primary == asset then
+            primary = count > 0 and self._selection_list[count] or nil
+            self:_set_primary(primary, self:_index_of(primary))
+        else
+            self._bind_dirty = true
+            self._inspector_dirty = true
+        end
+
+        self._selection_anchor = primary
+    else
+        self:_add_to_selection(asset)
+        self._selection_anchor = asset
+        self:_set_primary(asset, index)
+    end
+end
+
+--- Shift+click: selects the results from the anchor to the asset; with `additive` (Ctrl+Shift) the
+-- range is added to the selection instead of replacing it. Without an anchor among the results it
+-- selects the asset alone. The anchor stays, so further Shift+clicks resize the range.
+-- tab: asset asset record
+-- int: index its position in the results
+-- bool: additive keep the current selection
+function IconBrowserView._select_range(self, asset, index, additive)
+    local anchor = self._selection_anchor
+    local anchor_index = self:_index_of(anchor)
+
+    if not anchor_index then
+        self:_select_asset(asset, index, false)
+
+        return
+    end
+
+    if not additive then
+        self:_clear_selection()
+    end
+
+    local results = self._results
+    local step = anchor_index <= index and 1 or -1
+
+    for i = anchor_index, index, step do
+        self:_add_to_selection(results[i])
+    end
+
+    self._selection_anchor = anchor
+    self:_set_primary(asset, index)
+end
+
+--- Ctrl+A: selects every listed result; the primary selection stays when it is listed, else the
+-- focused or first result takes its place.
+function IconBrowserView._select_all_results(self)
+    local count = self._result_count
+
+    if count == 0 then
+        return
+    end
+
+    local results = self._results
+
+    self:_clear_selection()
+
+    for i = 1, count do
+        self:_add_to_selection(results[i])
+    end
+
+    local primary = self._selected_asset
+    local index = self:_index_of(primary)
+
+    if not index then
+        index = self._focus_index or 1
+        primary = results[index]
+    end
+
+    self._selection_anchor = primary
+    self:_set_primary(primary, index)
+end
+
+--- Fills `_selection_ordered` with the selected assets in the active sort order, filtered out ones
+-- included, which is the order bulk copies use.
+-- treturn: tab array of assets
+-- treturn: int number of assets
+function IconBrowserView._ordered_selection(self)
+    local ordered = self._selection_ordered
+    local selection = self._selection
+    local order = Query.order(self._query_cache, self._assets, self._query_state.sort)
+    local count = 0
+
+    table_clear(ordered)
+
+    for i = 1, self._assets.count do
+        local asset = order[i]
+
+        if selection[asset] then
+            count = count + 1
+            ordered[count] = asset
+        end
+    end
+
+    return ordered, count
 end
 
 --- Moves the keyboard focus through the results and scrolls it into view; without a focus it
@@ -1688,13 +2057,53 @@ function IconBrowserView._move_focus(self, delta_x, delta_y)
     self:_scroll_to_index(index)
 end
 
+--- Bulk format each button copies while several assets are selected, its chat label and the status
+-- shown in the header.
+local BULK_COPY_FORMATS = {
+    path = { label = "paths", status = "status_copied_paths" },
+    filename = { label = "filenames", status = "status_copied_filenames" },
+    lua_string = { label = "Lua array", status = "status_copied_lua_array" },
+    ui_snippet = { label = "Lua table", status = "status_copied_lua_table" },
+}
+
+--- Copies the selected assets in a bulk format, in the active sort order, and shows the status; bulk
+-- copies are not added to the recent history.
+-- string: copy_format button format: `path`, `filename`, `lua_string` or `ui_snippet`
+function IconBrowserView._copy_selection(self, copy_format)
+    local bulk = BULK_COPY_FORMATS[copy_format]
+
+    if not bulk then
+        return
+    end
+
+    local list, count = self:_ordered_selection()
+    local text
+
+    if copy_format == "path" or copy_format == "filename" then
+        text = Assets.field_lines(list, count, copy_format)
+    elseif copy_format == "lua_string" then
+        text = Assets.lua_array(list, count)
+    else
+        text = Assets.lua_table(list, count)
+    end
+
+    local copied = mod.copy_icon_list_to_clipboard(text, bulk.label, count)
+
+    self:_set_copy_status(copied and mod:localize(bulk.status, count) or self._status_text.failed, not copied)
+end
+
 --- Copies a format of the selected asset, records it in the recent history and shows the status.
+-- With several assets selected, the bulk format of `BULK_COPY_FORMATS` is copied instead.
 -- string: copy_format `path`, `filename`, `lua_string`, `ui_snippet` or `sources`
 function IconBrowserView._copy_selected(self, copy_format)
     local asset = self._selected_asset
 
     if not asset then
         return
+    end
+
+    if self._selection_count > 1 then
+        return self:_copy_selection(copy_format)
     end
 
     local copied
@@ -1721,11 +2130,46 @@ function IconBrowserView._copy_selected(self, copy_format)
     self:_set_copy_status(copied and status_text[copy_format] or status_text.failed, not copied)
 end
 
---- Toggles the selected asset's favorite and shows the status.
+--- Returns whether every selected asset is a favorite.
+-- treturn: bool
+function IconBrowserView._selection_all_favorites(self)
+    local list = self._selection_list
+    local favorites = mod._favorite_lookup
+
+    for i = 1, self._selection_count do
+        if not favorites[list[i].path] then
+            return false
+        end
+    end
+
+    return true
+end
+
+--- Toggles the selected asset's favorite and shows the status. With several assets selected, all of
+-- them become favorites, or all are removed when every one of them already is.
 function IconBrowserView._toggle_selected_favorite(self)
     local asset = self._selected_asset
 
     if not asset then
+        return
+    end
+
+    local count = self._selection_count
+
+    if count > 1 then
+        local is_favorite = not self:_selection_all_favorites()
+        local paths = {}
+        local list = self._selection_list
+
+        for i = 1, count do
+            paths[i] = list[i].path
+        end
+
+        local changed = mod.set_icon_favorites(paths, count, is_favorite)
+
+        self:_set_copy_status(mod:localize(is_favorite and "status_favorites_added" or "status_favorites_removed",
+            changed), false)
+
         return
     end
 
@@ -1734,7 +2178,9 @@ function IconBrowserView._toggle_selected_favorite(self)
     self:_set_copy_status(self._status_text[is_favorite and "favorite_added" or "favorite_removed"], false)
 end
 
---- Pressed callback of a slot; leaves the search field and selects the slot's asset.
+--- Pressed callback of a slot; leaves the search field and selects the slot's asset: alone on a
+-- plain click, toggled with Ctrl, as a range from the anchor with Shift, added as a range with
+-- Ctrl+Shift.
 -- int: slot_index slot in the pool
 function IconBrowserView.cb_on_slot_pressed(self, slot_index)
     local widget = self._slots[slot_index]
@@ -1744,12 +2190,24 @@ function IconBrowserView.cb_on_slot_pressed(self, slot_index)
         return
     end
 
+    local index = widget.content.result_index
+    local keys = _keyboard_keys_lookup()
+    local ctrl = keys and _ctrl_down(keys)
+
     self:_stop_search_input()
-    self:_select_asset(asset, widget.content.result_index, true)
+
+    if keys and _shift_down(keys) then
+        self:_select_range(asset, index, ctrl)
+    elseif ctrl then
+        self:_toggle_in_selection(asset, index)
+    else
+        self:_select_asset(asset, index, true)
+    end
 end
 
 --- The hotspot calls this instead of `pressed_callback` for the second click of a double click.
 -- Selects the slot's asset and copies its path when the Double-Click Copies Path setting is on.
+-- With Ctrl or Shift held it counts as a second click instead, so quick Ctrl+clicks toggle twice.
 -- int: slot_index slot in the pool
 function IconBrowserView.cb_on_slot_double_clicked(self, slot_index)
     local widget = self._slots[slot_index]
@@ -1757,6 +2215,12 @@ function IconBrowserView.cb_on_slot_double_clicked(self, slot_index)
 
     if not asset then
         return
+    end
+
+    local keys = _keyboard_keys_lookup()
+
+    if keys and (_ctrl_down(keys) or _shift_down(keys)) then
+        return self:cb_on_slot_pressed(slot_index)
     end
 
     if asset ~= self._selected_asset then
@@ -1792,12 +2256,15 @@ function IconBrowserView.legend_favorite_visible(self)
     return self._selected_asset ~= nil and not self:_input_blocked()
 end
 
---- Esc leaves the search field first, then an open menu, and only then closes the browser.
+--- Esc leaves the search field first, then an open menu, then reduces a multi-selection to its
+-- primary asset, and only then closes the browser.
 function IconBrowserView.cb_on_back_pressed(self)
     if self:_is_typing() then
         self:_stop_search_input()
     elseif self._open_popup then
         self:_close_popup()
+    elseif self._selection_count > 1 then
+        self:_select_asset(self._selected_asset, self._focus_index, false)
     else
         Managers.ui:close_view(VIEW_NAME)
     end
@@ -1905,6 +2372,53 @@ end
 function IconBrowserView.cb_on_column_pressed(self, sort_key)
     self:_stop_search_input()
     self:_apply_sort(Query.toggle_sort(self._query_state.sort, sort_key))
+end
+
+--- Opens or closes the Related menu of the selected asset.
+function IconBrowserView.cb_on_related_pressed(self)
+    local asset = self._selected_asset
+
+    if self._open_popup == "related" or not asset then
+        self:_close_popup()
+
+        return
+    end
+
+    self:_build_related_options(asset)
+    self:_open_popup_menu("related")
+end
+
+--- Shows the relatives chosen in the Related menu: writes the entry's filter into the search field
+-- and switches the category, favorites and recent filters off, so the count shown in the menu is
+-- what the browser lists; the selection stays and is scrolled into view.
+-- int: index entry of the Related menu
+function IconBrowserView.cb_on_related_option_pressed(self, index)
+    local token = self._related_tokens[index]
+
+    self:_close_popup()
+
+    if not token then
+        return
+    end
+
+    local search_content = self._search_content
+    local state = self._query_state
+
+    search_content.input_text = token
+    search_content.selected_text = nil
+    search_content.caret_position = Utf8.string_length(token) + 1
+    search_content.force_caret_update = true
+
+    if state.category ~= Query.CATEGORY_ALL then
+        state.category = Query.CATEGORY_ALL
+        mod.set_icon_browser_category(Query.CATEGORY_ALL)
+    end
+
+    state.favorites_only = false
+    state.recent_only = false
+    self._results_dirty = true
+    self._keep_selection_visible = true
+    self:_refresh_toolbar()
 end
 
 --- Toggles the favorites filter; switching it on switches the recent filter off.
@@ -2267,8 +2781,92 @@ function IconBrowserView._items_text(self, asset)
     return text
 end
 
+--- Subtitle of a multi-selection: the shared category, else how many categories it spans.
+-- treturn: string
+function IconBrowserView._selection_subtitle(self)
+    local list = self._selection_list
+    local category = list[1].category
+    local seen = { [category] = true }
+    local category_count = 1
+
+    for i = 2, self._selection_count do
+        local other = list[i].category
+
+        if not seen[other] then
+            seen[other] = true
+            category_count = category_count + 1
+        end
+    end
+
+    if category_count == 1 then
+        return upper(list[1].category_label)
+    end
+
+    return upper(mod:localize("selection_categories", category_count))
+end
+
+--- Metadata of a multi-selection: one line per selected asset (browser ID and filename) in the
+-- active sort order, as many as fit the metadata block, and how many more there are.
+-- treturn: string
+function IconBrowserView._build_selection_summary(self)
+    local lines = self._metadata_lines
+    local style = self._widgets_by_name.inspector_metadata.style.text
+    local width = self._layout.metadata_width
+    local list, count = self:_ordered_selection()
+    local line_height = style.font_size * (style.line_spacing or 1)
+    local capacity = max(2, floor(self._ui_scenegraph.inspector_metadata.size[2] / line_height) - 1)
+    local shown = count <= capacity and count or capacity - 1
+
+    lines[1] = LABEL_TAG .. upper(mod:localize("selection_header")) .. RESET_TAG
+
+    for i = 1, shown do
+        local asset = list[i]
+        local text = self:_fit_text(asset.id_text .. "  " .. asset.filename, style, width, false)
+
+        lines[i + 1] = VALUE_TAG .. text .. RESET_TAG
+    end
+
+    local line_count = shown + 1
+
+    if shown < count then
+        line_count = line_count + 1
+        lines[line_count] = mod:localize("more_format", count - shown)
+    end
+
+    return concat(lines, "\n", 1, line_count)
+end
+
+--- Labels the copy and favorite buttons for one selected asset or for several, and enables the
+-- actions that exist in that mode: Copy Sources and Show Related need a single asset.
+-- tab: asset primary selection
+-- bool: multi whether several assets are selected
+function IconBrowserView._refresh_action_labels(self, asset, multi)
+    local widgets_by_name = self._widgets_by_name
+    local texts = self._action_texts
+    local favorite_text
+
+    if multi then
+        widgets_by_name.copy_path_button.content.original_text = upper(mod:localize("action_copy_paths",
+            self._selection_count))
+        favorite_text = self:_selection_all_favorites() and texts.favorite_remove_all or texts.favorite_add_all
+    else
+        widgets_by_name.copy_path_button.content.original_text = upper(mod:localize("action_copy_path"))
+        favorite_text = asset and mod.is_icon_favorite(asset.path) and texts.favorite_remove or texts.favorite_add
+    end
+
+    widgets_by_name.copy_filename_button.content.text = multi and texts.filenames or texts.filename
+    widgets_by_name.copy_lua_button.content.text = multi and texts.lua_array or texts.lua_string
+    widgets_by_name.copy_snippet_button.content.text = multi and texts.lua_table or texts.ui_snippet
+    widgets_by_name.favorite_button.content.text = favorite_text
+
+    if asset then
+        widgets_by_name.copy_sources_button.content.hotspot.disabled = multi or asset.ref_count == 0
+        widgets_by_name.related_button.content.hotspot.disabled = multi
+    end
+end
+
 --- Fills the inspector from the selection; without one it shows the empty state and disables the
--- actions.
+-- actions. With several assets selected it previews the primary one and lists the selection.
 function IconBrowserView._refresh_inspector(self)
     self._inspector_dirty = false
 
@@ -2296,7 +2894,7 @@ function IconBrowserView._refresh_inspector(self)
         icon_content.icon_available = false
         icon_content.icon_source = false
         fallback_content.icon_available = false
-        widgets_by_name.favorite_button.content.text = upper(mod:localize("action_favorite_add"))
+        self:_refresh_action_labels(nil, false)
 
         return
     end
@@ -2304,6 +2902,7 @@ function IconBrowserView._refresh_inspector(self)
     local path = asset.path
     local loaded = self:_is_material_loaded(path)
     local available = loaded and mod.can_render_icon_path(path)
+    local multi = self._selection_count > 1
 
     icon_content.icon_source = path
     icon_content.icon = available and path or ""
@@ -2311,12 +2910,18 @@ function IconBrowserView._refresh_inspector(self)
     fallback_content.icon_available = available
     _set_fallback(fallback_content, "text", preview_widgets.preview_fallback.style.text, self._fallback_texts.long,
         loaded, self._global_packages_loading)
-    widgets_by_name.inspector_title.content.text = asset.display_name
-    widgets_by_name.inspector_subtitle.content.text = upper(asset.category_label)
-    widgets_by_name.favorite_button.content.text = upper(mod:localize(mod.is_icon_favorite(path)
-        and "action_favorite_remove" or "action_favorite_add"))
-    widgets_by_name.inspector_metadata.content.text = self:_build_metadata(asset, available, loaded)
-    widgets_by_name.copy_sources_button.content.hotspot.disabled = asset.ref_count == 0
+
+    if multi then
+        widgets_by_name.inspector_title.content.text = mod:localize("selection_title", self._selection_count)
+        widgets_by_name.inspector_subtitle.content.text = self:_selection_subtitle()
+        widgets_by_name.inspector_metadata.content.text = self:_build_selection_summary()
+    else
+        widgets_by_name.inspector_title.content.text = asset.display_name
+        widgets_by_name.inspector_subtitle.content.text = upper(asset.category_label)
+        widgets_by_name.inspector_metadata.content.text = self:_build_metadata(asset, available, loaded)
+    end
+
+    self:_refresh_action_labels(asset, multi)
 
     if ASPECTS[self._preview_aspect_index].auto then
         self:_layout_preview()
@@ -2459,9 +3064,9 @@ end
 -- ----------------------------------------------------------------------------
 
 --- Handles keyboard and mouse input each frame. While the search field has focus, only Enter is
--- handled, leaving the field. Otherwise Ctrl+F focuses the field and Ctrl+C copies the path, a
--- click outside an open menu closes it without reaching the widgets below, and the arrow keys
--- move the focus.
+-- handled, leaving the field. Otherwise Ctrl+F focuses the field, Ctrl+C copies the path (the
+-- paths of a multi-selection), Ctrl+A selects every listed result, a click outside an open menu
+-- closes it without reaching the widgets below, and the arrow keys move the focus.
 -- tab: input_service view input service
 -- number: dt frame delta time
 -- number: t time
@@ -2486,6 +3091,10 @@ function IconBrowserView._handle_input(self, input_service, dt, t)
             return
         elseif keyboard.pressed(keys.c) then
             self:_copy_selected("path")
+
+            return
+        elseif keys.a and not self._open_popup and keyboard.pressed(keys.a) then
+            self:_select_all_results()
 
             return
         end

@@ -6,11 +6,18 @@
 --
 -- Search is case-insensitive substring matching of every whitespace-separated term (all terms must
 -- match) against the asset's search text; a term with underscores or hyphens also matches with them
--- read as spaces.
+-- read as spaces. Terms written as `kind:value` are filters on one field instead, which the
+-- inspector's Related menu writes into the search field:
+-- `in:icons/currencies/` the folder and its subfolders (a prefix of the folder path, so a typed
+-- `in:icons/curr` works as well; the `content/ui/materials/` prefix may be included);
+-- `family:icons/currencies/credits` the variants of one icon in its folder (exact);
+-- `filename:credits_big` the same filename in any folder (exact);
+-- `file:wallet_settings.lua` the icons a game script names (part of the script path).
 --
 -- Query state fields (`new_state`):
--- `text` the search text as typed; `terms` its lower-case terms; `normalized_terms` each term with
--- underscores and hyphens read as spaces, or false when that changes nothing; `term_count`;
+-- `text` the search text as typed; `terms` its lower-case plain terms; `normalized_terms` each term
+-- with underscores and hyphens read as spaces, or false when that changes nothing; `term_count`;
+-- `filter_kinds`, `filter_values` the filters, `filter_count`;
 -- `category` category id, `all` for no category filter; `favorites_only`, `recent_only` the two
 -- list filters; `sort` sort id of `SORTS`.
 --
@@ -21,7 +28,9 @@ local find = string.find
 local gmatch = string.gmatch
 local gsub = string.gsub
 local lower = string.lower
+local match = string.match
 local sort = table.sort
+local sub = string.sub
 
 --- The query module table.
 local Query = {}
@@ -54,6 +63,13 @@ for i = 1, #Query.SORTS do
 
     SORT_BY_ID[sort_option.id] = sort_option
 end
+
+--- Kinds of `kind:value` search filters.
+local FILTER_KINDS = { ["in"] = true, family = true, filename = true, file = true }
+
+--- Prefix of every material path, which an `in:` filter may include.
+local MATERIAL_ROOT = "content/ui/materials/"
+local MATERIAL_ROOT_LENGTH = #MATERIAL_ROOT
 
 --- Sorts whose order depends on (localized) names, rebuilt when the names change.
 local NAME_DEPENDENT_SORTS = { "name_asc", "name_desc", "category_asc", "category_desc" }
@@ -208,6 +224,9 @@ function Query.new_state()
         terms = {},
         normalized_terms = {},
         term_count = 0,
+        filter_kinds = {},
+        filter_values = {},
+        filter_count = 0,
         category = Query.CATEGORY_ALL,
         favorites_only = false,
         recent_only = false,
@@ -215,7 +234,19 @@ function Query.new_state()
     }
 end
 
---- Parses the search text into terms, reusing the state's term arrays.
+--- Returns the search filter that shows an asset's relatives, e.g. `in:icons/currencies/`.
+-- string: kind filter kind: `in`, `family`, `filename` or `file`
+-- string: value folder (without trailing `/`), family, filename or script path
+-- treturn: string
+function Query.filter_token(kind, value)
+    if kind == "in" then
+        return "in:" .. value .. "/"
+    end
+
+    return kind .. ":" .. value
+end
+
+--- Parses the search text into plain terms and `kind:value` filters, reusing the state's arrays.
 -- tab: state query state
 -- ?string: text search text as typed
 -- treturn: bool false when the text did not change
@@ -230,15 +261,31 @@ function Query.set_text(state, text)
 
     local terms = state.terms
     local normalized_terms = state.normalized_terms
+    local filter_kinds = state.filter_kinds
+    local filter_values = state.filter_values
     local previous_count = state.term_count
+    local previous_filter_count = state.filter_count
     local count = 0
+    local filter_count = 0
 
     for term in gmatch(lower(text), "%S+") do
-        local normalized = gsub(term, "[_%-]+", " ")
+        local kind, value = match(term, "^(%l+):(.+)$")
 
-        count = count + 1
-        terms[count] = term
-        normalized_terms[count] = normalized ~= term and normalized or false
+        if kind and FILTER_KINDS[kind] then
+            if kind == "in" and sub(value, 1, MATERIAL_ROOT_LENGTH) == MATERIAL_ROOT then
+                value = sub(value, MATERIAL_ROOT_LENGTH + 1)
+            end
+
+            filter_count = filter_count + 1
+            filter_kinds[filter_count] = kind
+            filter_values[filter_count] = value
+        else
+            local normalized = gsub(term, "[_%-]+", " ")
+
+            count = count + 1
+            terms[count] = term
+            normalized_terms[count] = normalized ~= term and normalized or false
+        end
     end
 
     for i = count + 1, previous_count do
@@ -246,9 +293,44 @@ function Query.set_text(state, text)
         normalized_terms[i] = nil
     end
 
+    for i = filter_count + 1, previous_filter_count do
+        filter_kinds[i] = nil
+        filter_values[i] = nil
+    end
+
     state.term_count = count
+    state.filter_count = filter_count
 
     return true
+end
+
+--- Returns whether an asset passes one `kind:value` filter.
+-- tab: asset asset record
+-- string: kind filter kind
+-- string: value lower-case filter value
+-- treturn: bool
+local function _passes_filter(asset, kind, value)
+    if kind == "in" then
+        return find(asset.folder, value, 1, true) == 1
+    elseif kind == "family" then
+        return asset.family == value
+    elseif kind == "filename" then
+        return asset.filename == value
+    end
+
+    local files = asset.ref_files
+
+    if not files then
+        return false
+    end
+
+    for i = 1, #files do
+        if find(files[i], value, 1, true) then
+            return true
+        end
+    end
+
+    return false
 end
 
 --- Writes the assets matching `state` into `results` in sort order; returns the match count.
@@ -271,6 +353,9 @@ function Query.run(state, assets, cache, favorites, recent, results, previous_co
     local terms = state.terms
     local normalized_terms = state.normalized_terms
     local term_count = state.term_count
+    local filter_kinds = state.filter_kinds
+    local filter_values = state.filter_values
+    local filter_count = state.filter_count
     local count = 0
 
     for i = 1, assets.count do
@@ -278,6 +363,16 @@ function Query.run(state, assets, cache, favorites, recent, results, previous_co
         local keep = (not filter_category or asset.category == category)
             and (not favorites_only or favorites[asset.path] == true)
             and (not recent_only or recent[asset.path] ~= nil)
+
+        if keep and filter_count > 0 then
+            for f = 1, filter_count do
+                if not _passes_filter(asset, filter_kinds[f], filter_values[f]) then
+                    keep = false
+
+                    break
+                end
+            end
+        end
 
         if keep and term_count > 0 then
             local blob = asset.search_blob

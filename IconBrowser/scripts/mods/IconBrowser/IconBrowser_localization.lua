@@ -538,8 +538,8 @@ return {
         de = "L",
     },
     shortcut_hint = {
-        en = "[Ctrl+F] Search    [Arrow keys] Navigate    [Enter] Select    [Double-click / Ctrl+C] Copy path    [Esc] Leave search / Close",
-        de = "[Strg+F] Suchen    [Pfeiltasten] Navigieren    [Enter] Auswählen    [Doppelklick / Strg+C] Pfad kopieren    [Esc] Suche verlassen / Schließen",
+        en = "[Ctrl+F] Search    [Arrow keys] Navigate    [Enter] Select    [Ctrl/Shift+Click, Ctrl+A] Multi-select    [Double-click / Ctrl+C] Copy path    [Esc] Leave search / Close",
+        de = "[Strg+F] Suchen    [Pfeiltasten] Navigieren    [Enter] Auswählen    [Strg/Umschalt+Klick, Strg+A] Mehrfachauswahl    [Doppelklick / Strg+C] Pfad kopieren    [Esc] Suche verlassen / Schließen",
     },
 
     -- Categories
@@ -868,6 +868,66 @@ return {
         en = "Remove Favorite",
         de = "Favorit entfernen",
     },
+    action_copy_paths = {
+        en = "Copy %d Paths",
+        de = "%d Pfade kopieren",
+    },
+    action_copy_filenames = {
+        en = "Copy Filenames",
+        de = "Dateinamen kopieren",
+    },
+    action_copy_lua_array = {
+        en = "Copy Lua Array",
+        de = "Lua-Array kopieren",
+    },
+    action_copy_lua_table = {
+        en = "Copy Lua Table",
+        de = "Lua-Tabelle kopieren",
+    },
+    action_favorite_add_all = {
+        en = "Favorite All",
+        de = "Alle favorisieren",
+    },
+    action_favorite_remove_all = {
+        en = "Unfavorite All",
+        de = "Favoriten entfernen",
+    },
+    selection_title = {
+        en = "%d assets selected",
+        de = "%d Assets ausgewählt",
+    },
+    selection_categories = {
+        en = "%d categories",
+        de = "%d Kategorien",
+    },
+    selection_header = {
+        en = "Selected",
+        de = "Ausgewählt",
+    },
+    action_related = {
+        en = "Show Related",
+        de = "Verwandte zeigen",
+    },
+    related_family = {
+        en = "Same family: %s",
+        de = "Gleiche Familie: %s",
+    },
+    related_folder = {
+        en = "Same folder: %s",
+        de = "Gleicher Ordner: %s",
+    },
+    related_filename = {
+        en = "Same filename: %s",
+        de = "Gleicher Dateiname: %s",
+    },
+    related_file = {
+        en = "Used in %s",
+        de = "Verwendet in %s",
+    },
+    related_none = {
+        en = "No related assets",
+        de = "Keine verwandten Assets",
+    },
 
     -- Status messages
     status_copied_path = {
@@ -889,6 +949,30 @@ return {
     status_copied_sources = {
         en = "Source references copied",
         de = "Quellverweise kopiert",
+    },
+    status_copied_paths = {
+        en = "%d paths copied",
+        de = "%d Pfade kopiert",
+    },
+    status_copied_filenames = {
+        en = "%d filenames copied",
+        de = "%d Dateinamen kopiert",
+    },
+    status_copied_lua_array = {
+        en = "Lua array of %d icons copied",
+        de = "Lua-Array mit %d Icons kopiert",
+    },
+    status_copied_lua_table = {
+        en = "Lua table of %d icons copied",
+        de = "Lua-Tabelle mit %d Icons kopiert",
+    },
+    status_favorites_added = {
+        en = "%d added to favorites",
+        de = "%d zu Favoriten hinzugefügt",
+    },
+    status_favorites_removed = {
+        en = "%d removed from favorites",
+        de = "%d aus Favoriten entfernt",
     },
     status_copy_failed = {
         en = "Copy failed",

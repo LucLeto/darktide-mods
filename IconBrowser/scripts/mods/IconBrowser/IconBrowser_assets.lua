@@ -10,7 +10,11 @@
 -- Asset fields:
 -- `id` browser ID, the position in the sorted index; `id_text` the same as `#id`;
 -- `path` full material path, the canonical identifier; `filename` its last path segment;
--- `directory` the path between `content/ui/materials/` and the filename;
+-- `directory` the path between `content/ui/materials/` and the filename; `folder` the same with a
+-- trailing `/`, as the `in:` search filter matches it;
+-- `family` the directory and the filename without its variant suffixes (`icons/currencies/credits` for
+-- `credits_big` and `credits_small`); `family_size` the number of assets in the family;
+-- `filename_count` the number of assets with the same filename;
 -- `readable_name` the humanized filename, prefixed with the parent folder when several indexed paths
 -- share the filename;
 -- `display_name` the shown name: the localized name, else the humanized definition key, else
@@ -21,12 +25,15 @@
 -- `category` category id of `CATEGORIES`; `category_label` its localized label;
 -- `source_refs` the script lines naming the path (`scripts/...lua:line`), else false; `item_refs`
 -- the items using it as `hud_icon` (`{ item name, display name key }`), else false; `ref_count`
--- both counted together; `usage_sizes` the sizes the game draws it at (`WxH`, most frequent first),
--- else false; `usage_width`, `usage_height` the first of them, else 0; all from `attach_sources`;
+-- both counted together; `ref_files` the lower-case script files of `source_refs` without line
+-- numbers, each once, else false; `usage_sizes` the sizes the game draws it at (`WxH`, most frequent
+-- first), else false; `usage_width`, `usage_height` the first of them, else 0; all from
+-- `attach_sources`;
 -- `search_extra` the lower-case script files and item names it is found under, else "";
 -- `search_blob` lower-case path, the path with `_`, `-` and `/` read as spaces, the names, `#id` and
 -- `search_extra`, separated by `|`;
--- `lua_string`, `ui_snippet` the copy formats, built on first use, else false.
+-- `lua_string`, `ui_snippet` the copy formats, built on first use, else false. Several selected
+-- assets are copied with `field_lines`, `lua_array` and `lua_table`.
 --
 -- Loaded through `mod:io_dofile` by `IconBrowser.lua` and stored as `mod._assets_module`; the
 -- model built by `build` is stored as `mod._assets`.
@@ -106,6 +113,19 @@ Assets.CATEGORIES = {
 local CATEGORY_ALL = "all"
 local CATEGORY_OTHER = "other"
 
+--- Filename suffixes that mark a size variant of the same icon. Numbered (`_01`, `_2b`) and lettered
+-- (`_a`) variants are recognised by pattern.
+local VARIANT_SUFFIXES = {
+    tiny = true,
+    small = true,
+    medium = true,
+    big = true,
+    large = true,
+    huge = true,
+    xs = true,
+    xl = true,
+}
+
 --- Lua UI snippet copied for an asset: a texture pass for `UIWidget.create_definition`, with the
 -- material path as `%s`.
 local UI_SNIPPET_FORMAT = [[{
@@ -152,6 +172,22 @@ local function _relative_path(path)
     end
 
     return path
+end
+
+--- Returns a filename without its variant suffixes, e.g. `credits` for `credits_big` and
+-- `mission_type` for `mission_type_01`; several suffixes are removed one after another.
+-- string: filename last path segment
+-- treturn: string
+local function _family_stem(filename)
+    while true do
+        local base, suffix = match(filename, "^(.+)_(%w+)$")
+
+        if not base or not (VARIANT_SUFFIXES[suffix] or find(suffix, "^%d+%a?$") or find(suffix, "^%a$")) then
+            return filename
+        end
+
+        filename = base
+    end
 end
 
 --- Returns the id of the first category with a prefix matching the path, else `other`.
@@ -205,6 +241,7 @@ function Assets.build(paths, mod)
     local list = {}
     local by_path = {}
     local filename_counts = {}
+    local family_counts = {}
     local category_counts = {}
     local category_labels = {}
     local categories = Assets.CATEGORIES
@@ -242,12 +279,18 @@ function Assets.build(paths, mod)
         end
 
         local category = _category_of(relative_path)
+        local stem = _family_stem(filename)
+        local family = directory ~= "" and directory .. "/" .. stem or stem
         local asset = {
             id = i,
             id_text = "#" .. i,
             path = path,
             filename = filename,
             directory = directory,
+            folder = directory .. "/",
+            family = family,
+            family_size = 0,
+            filename_count = filename_counts[filename],
             readable_name = readable_name,
             display_name = readable_name,
             sort_name = lower(readable_name),
@@ -260,6 +303,7 @@ function Assets.build(paths, mod)
             source_refs = false,
             item_refs = false,
             ref_count = 0,
+            ref_files = false,
             usage_sizes = false,
             usage_width = 0,
             usage_height = 0,
@@ -273,6 +317,13 @@ function Assets.build(paths, mod)
         list[i] = asset
         by_path[path] = asset
         category_counts[category] = category_counts[category] + 1
+        family_counts[family] = (family_counts[family] or 0) + 1
+    end
+
+    for i = 1, count do
+        local asset = list[i]
+
+        asset.family_size = family_counts[asset.family]
     end
 
     category_counts[CATEGORY_ALL] = count
@@ -296,8 +347,8 @@ end
 -- ----------------------------------------------------------------------------
 
 --- Adds the generated source references to the assets they name, once; safe to call repeatedly.
--- Sets each named asset's `source_refs`, `item_refs`, `ref_count`, `usage_sizes`, `usage_width` and
--- `usage_height`, and adds the script files (without line numbers) and item names to its search
+-- Sets each named asset's `source_refs`, `item_refs`, `ref_count`, `ref_files`, `usage_sizes`,
+-- `usage_width` and `usage_height`, and adds the script files (without line numbers) and item names to its search
 -- text, so an icon can be found by where the game uses it. Call it before `resolve_names`, which
 -- turns the items' display names into name candidates.
 -- tab: assets asset model built by `build`
@@ -324,14 +375,18 @@ function Assets.attach_sources(assets, sources)
             local sizes = type(entry.sizes) == "table" and entry.sizes or false
             local search_parts = {}
             local seen_files = {}
+            local ref_files = false
 
             if refs then
+                ref_files = {}
+
                 for i = 1, #refs do
-                    local file = match(refs[i], "^(.-):%d+$") or refs[i]
+                    local file = lower(match(refs[i], "^(.-):%d+$") or refs[i])
 
                     if not seen_files[file] then
                         seen_files[file] = true
-                        search_parts[#search_parts + 1] = lower(file)
+                        ref_files[#ref_files + 1] = file
+                        search_parts[#search_parts + 1] = file
                     end
                 end
             end
@@ -352,6 +407,7 @@ function Assets.attach_sources(assets, sources)
             asset.source_refs = refs
             asset.item_refs = items
             asset.ref_count = (refs and #refs or 0) + (items and #items or 0)
+            asset.ref_files = ref_files
             asset.usage_sizes = sizes
             asset.search_extra = concat(search_parts, " ")
             asset.search_blob = _search_blob(asset, nil, nil)
@@ -706,6 +762,81 @@ function Assets.ui_snippet(asset)
     end
 
     return text
+end
+
+--- Lua keywords, which cannot be bare table keys.
+local LUA_KEYWORDS = {
+    ["and"] = true, ["break"] = true, ["do"] = true, ["else"] = true, ["elseif"] = true, ["end"] = true,
+    ["false"] = true, ["for"] = true, ["function"] = true, ["goto"] = true, ["if"] = true, ["in"] = true,
+    ["local"] = true, ["nil"] = true, ["not"] = true, ["or"] = true, ["repeat"] = true, ["return"] = true,
+    ["then"] = true, ["true"] = true, ["until"] = true, ["while"] = true,
+}
+
+--- Returns one field of several assets, one per line, in the given order.
+-- tab: list array of asset records
+-- int: count number of assets in `list`
+-- string: field `path` or `filename`
+-- treturn: string
+function Assets.field_lines(list, count, field)
+    local lines = {}
+
+    for i = 1, count do
+        lines[i] = list[i][field]
+    end
+
+    return concat(lines, "\n", 1, count)
+end
+
+--- Returns the paths of several assets as a Lua array, in the given order.
+-- tab: list array of asset records
+-- int: count number of assets in `list`
+-- treturn: string
+function Assets.lua_array(list, count)
+    local lines = { "{" }
+
+    for i = 1, count do
+        lines[i + 1] = '    "' .. list[i].path .. '",'
+    end
+
+    lines[count + 2] = "}"
+
+    return concat(lines, "\n", 1, count + 2)
+end
+
+--- Returns the paths of several assets as a Lua table keyed by filename, in the given order. A
+-- filename that occurs more than once in the list is keyed by its path below `content/ui/materials/`
+-- instead, and keys that are not plain identifiers are written as `["key"]`.
+-- tab: list array of asset records
+-- int: count number of assets in `list`
+-- treturn: string
+function Assets.lua_table(list, count)
+    local filename_counts = {}
+    local lines = { "{" }
+
+    for i = 1, count do
+        local filename = list[i].filename
+
+        filename_counts[filename] = (filename_counts[filename] or 0) + 1
+    end
+
+    for i = 1, count do
+        local asset = list[i]
+        local key = asset.filename
+
+        if filename_counts[key] > 1 then
+            key = asset.directory ~= "" and asset.directory .. "/" .. key or key
+        end
+
+        if not find(key, "^[%a_][%w_]*$") or LUA_KEYWORDS[key] then
+            key = '["' .. key .. '"]'
+        end
+
+        lines[i + 1] = "    " .. key .. ' = "' .. asset.path .. '",'
+    end
+
+    lines[count + 2] = "}"
+
+    return concat(lines, "\n", 1, count + 2)
 end
 
 return Assets

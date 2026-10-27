@@ -172,8 +172,6 @@ local ICON_BROWSER_PACKAGES = {
     "packages/ui/views/havoc_reward_presentation_view/havoc_reward_presentation_view",
     "packages/ui/views/havoc_play_view/havoc_play_view",
     "packages/ui/views/havoc_background_view/havoc_background_view",
-    "packages/ui/views/expedition_play_view/expedition_play_view",
-    "packages/ui/views/expedition_background_view/expedition_background_view",
     "packages/ui/views/expedition_view/expedition_view",
     "packages/ui/views/horde_play_view/horde_play_view",
     "packages/ui/views/training_grounds_options_view/training_grounds_options_view",
@@ -917,6 +915,64 @@ function mod.toggle_icon_favorite(path)
     return is_favorite
 end
 
+--- Makes several paths favorites, or removes them, and stores the list once.
+-- tab: paths array of full material paths
+-- int: count number of paths in `paths`
+-- bool: is_favorite true to add them, false to remove them
+-- treturn: int number of paths that changed
+function mod.set_icon_favorites(paths, count, is_favorite)
+    local list = mod._favorite_icons
+    local lookup = mod._favorite_lookup
+    local favorite_count = mod._favorite_count
+    local changed = 0
+
+    for i = 1, count do
+        local path = paths[i]
+
+        if type(path) == "string" and path ~= "" and (lookup[path] == true) ~= is_favorite then
+            changed = changed + 1
+
+            if is_favorite then
+                favorite_count = favorite_count + 1
+                list[favorite_count] = path
+                lookup[path] = true
+            else
+                lookup[path] = nil
+            end
+        end
+    end
+
+    if changed == 0 then
+        return 0
+    end
+
+    if not is_favorite then
+        local kept = 0
+
+        for i = 1, favorite_count do
+            local path = list[i]
+
+            if lookup[path] then
+                kept = kept + 1
+                list[kept] = path
+            end
+        end
+
+        for i = kept + 1, favorite_count do
+            list[i] = nil
+        end
+
+        favorite_count = kept
+    end
+
+    mod._favorite_count = favorite_count
+    mod:set(FAVORITES_SETTING, list)
+    mod._icon_lists_revision = mod._icon_lists_revision + 1
+    mod._icon_lists_dirty = true
+
+    return changed
+end
+
 --- Moves a path to the front of the recent history, keeping at most `MAX_RECENT_ICONS` entries.
 -- string: path full material path of a selected or copied asset
 function mod.record_recent_icon(path)
@@ -1202,6 +1258,42 @@ function mod.copy_icon_text_to_clipboard(icon_id, text, format_label, path)
     end
 
     _emit_user_message(format("[IconBrowser] Failed to copy %s of #%d %s", format_label, icon_id or 0, path), true)
+
+    return false
+end
+
+--- Copies a value built from several selected icons (paths, filenames, a Lua array or table). The
+-- chat message names the format and the number of icons instead of echoing the value.
+-- string: text value to copy
+-- string: format_label name of the copied format, e.g. `paths`
+-- int: icon_count number of icons in the value
+-- treturn: bool whether the value was copied
+function mod.copy_icon_list_to_clipboard(text, format_label, icon_count)
+    if type(text) ~= "string" or text == "" then
+        _emit_user_message(format("[IconBrowser] Unable to copy %s.", format_label), true)
+
+        return false
+    end
+
+    local clipboard = Clipboard
+    local clipboard_put = clipboard and clipboard.put
+
+    if type(clipboard_put) ~= "function" then
+        _emit_user_message(format("[IconBrowser] Clipboard unavailable for %s of %d icons", format_label, icon_count),
+            true)
+
+        return false
+    end
+
+    local ok, copied = pcall(clipboard_put, text)
+
+    if ok and copied ~= false then
+        _emit_user_message(format("[IconBrowser] Copied %s of %d icons", format_label, icon_count), true)
+
+        return true
+    end
+
+    _emit_user_message(format("[IconBrowser] Failed to copy %s of %d icons", format_label, icon_count), true)
 
     return false
 end
