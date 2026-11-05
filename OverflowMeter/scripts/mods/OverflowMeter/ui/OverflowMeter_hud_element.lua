@@ -417,6 +417,9 @@ local HudElementOverflowMeter = class("HudElementOverflowMeter", "HudElementBase
 HudElementOverflowMeter.init = function (self, parent, draw_layer, start_scale)
     HudElementOverflowMeter.super.init(self, parent, draw_layer, start_scale, Definitions)
 
+    -- Keep charge/keystone state and ring animations frame-accurate when UIThrottle (https://www.nexusmods.com/warhammer40kdarktide/mods/1386) is installed.
+    self._ui_throttle_exempt = true
+
     self._estimator = Estimator.new()
     self._ctx = { buffs_by_name = {} }
     self._loc = {}

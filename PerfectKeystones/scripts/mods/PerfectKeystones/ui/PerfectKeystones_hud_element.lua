@@ -312,6 +312,9 @@ local HudElementPerfectKeystones = class("HudElementPerfectKeystones", "HudEleme
 HudElementPerfectKeystones.init = function (self, parent, draw_layer, start_scale)
     HudElementPerfectKeystones.super.init(self, parent, draw_layer, start_scale, Definitions)
 
+    -- Keep charge/keystone state and ring animations frame-accurate when UIThrottle (https://www.nexusmods.com/warhammer40kdarktide/mods/1386) is installed.
+    self._ui_throttle_exempt = true
+
     self._active_color = { 0, 0, 0, 0 }
     self._unfilled_color = { 0, 0, 0, 0 }
     self._expiring_color = { 0, 0, 0, 0 }
