@@ -31,6 +31,7 @@ mod._ring_settings = mod:io_dofile("PerfectThrust/scripts/mods/PerfectThrust/Per
 local settings = {
     timing_mode = "predicted",
     show_heavy_threshold = true,
+    show_auto_release_marker = true,
     show_ads_blessings = true,
     debug_logging = false
 }
@@ -39,6 +40,7 @@ local settings = {
 local SETTING_IDS = {
     "timing_mode",
     "show_heavy_threshold",
+    "show_auto_release_marker",
     "show_ads_blessings",
     "debug_logging"
 }
@@ -172,8 +174,8 @@ end
 -- Melee windups: the charge before a light or heavy attack is released.
 mod:hook_safe(CLASS.ActionWindup, "start", on_windup_start)
 mod:hook_safe(CLASS.ActionWindup, "fixed_update", on_windup_fixed_update)
-mod:hook_safe(CLASS.ActionWindup, "finish", function (self, reason)
-    Tracker.on_windup_finish(self, reason)
+mod:hook_safe(CLASS.ActionWindup, "finish", function (self, reason, data, t, time_in_action)
+    Tracker.on_windup_finish(self, reason, data, time_in_action)
 end)
 
 -- Shield block-windups: heavy attacks charged from a block. ActionBlockWindup inherits finish from

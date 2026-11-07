@@ -4,13 +4,19 @@
 -- top while charging, the lit segments switch to the heavy attack available colour once a release
 -- counts as a heavy attack while charge-dependent effects still build, the whole ring switches to
 -- the READY colour at READY, each switch with an optional short pulse, and it hides as soon as the
--- tracker stops. Without a tracked windup and with the `show_ads_blessings` setting on, it asks the
+-- tracker stops. After READY, while the tracker reports the auto-release marker, one segment of the
+-- READY ring is drawn in the marker colour and at the marker size, twice the others by default,
+-- moving clockwise from the top as the marker's progress advances towards the automatic release,
+-- and each segment it leaves gets its READY colour and size back. Without a tracked windup and
+-- with the `show_ads_blessings` setting on, it asks the
 -- aim tracker instead, which fills the same ring while aiming blessings build and reports READY
 -- once they are at their maximum. Each of the two rings has its own display mode, crosshair
--- following, size, position, READY pulse and colours (amber charging, lime heavy attack available
--- and green READY by default); the element applies the settings of the ring it shows. Colours and
--- geometry are only rewritten when the lit count, the READY or heavy attack state, the pulse colour
--- phase, the shown ring or the settings change. With its `follow_crosshair` setting on, the shown
+-- following, size, position, READY pulse and colours (amber charging, lime heavy attack available,
+-- green READY and the white auto-release marker of the melee ring by default); the element applies
+-- the settings of the ring it shows. Colours and geometry are only rewritten when the lit count,
+-- the READY or heavy attack state, the pulse colour phase, the marker segment, the shown ring or
+-- the settings change; when only the marker moves, only the segment it leaves and the one it
+-- reaches are rewritten. With its `follow_crosshair` setting on, the shown
 -- ring moves with the game's crosshair as camera sway, weapon sway and recoil move it, on top of
 -- its offset settings.
 --
@@ -63,18 +69,24 @@ local DEG_TO_RAD = math_pi / 180
 local PULSE_DURATION = 0.25
 local PULSE_EXTRA_SCALE = 0.6
 
+--- Layers of the segments within the ring widget. The marker's larger square overlaps its
+-- neighbours, so it is drawn one layer above them.
+local SEGMENT_LAYER = 1
+local MARKER_LAYER = 2
+
 --- Frame time passed to `Crosshair.position` on the first frame a ring follows the crosshair.
 -- The crosshair eases toward its aim point by `min(35 * dt, 1)` per frame, so this lands on it at
 -- once instead of sliding in from the screen centre.
 local CROSSHAIR_SNAP_DT = 1
 
 --- Default segment colours `{ a, r, g, b }` of the unlit, charging, heavy attack available and
--- READY states, the colour settings' defaults. Used when a colour setting is invalid,
--- `SEG_READY_COLOR` also for the READY pulse colour; never written.
+-- READY states and of the auto-release marker, the colour settings' defaults. Used when a colour
+-- setting is invalid, `SEG_READY_COLOR` also for the READY pulse colour; never written.
 local SEG_DIM_COLOR = RingSettings.default_value("unfilled_color")
 local SEG_LIT_COLOR = RingSettings.default_value("charging_color")
 local SEG_HEAVY_COLOR = RingSettings.default_value("heavy_available_color")
 local SEG_READY_COLOR = RingSettings.default_value("ready_color")
+local SEG_MARKER_COLOR = RingSettings.default_value("auto_release_marker_color")
 
 --- Style id and unit circle position of each segment, precomputed so the per-frame loops build no strings.
 local SEGMENT_STYLE_IDS = {}
@@ -111,6 +123,60 @@ local function _lit_count(fill_fraction)
     end
 
     return lit
+end
+
+--- Returns the segment the auto-release marker is on.
+-- Each of the `SEGMENT_COUNT` segments covers an equal share of the marker's progress, the first
+-- one at the top, so the marker makes one clockwise turn by the predicted automatic release and
+-- stays on the last segment from then until the ring hides.
+-- ?number: progress marker progress from 0 to 1, or nil without a marker
+-- treturn: int marker segment from 1 to `SEGMENT_COUNT`, or 0 without a marker
+local function _marker_segment(progress)
+    if not progress then
+        return 0
+    end
+
+    local segment = math_floor(progress * SEGMENT_COUNT) + 1
+
+    if segment > SEGMENT_COUNT then
+        return SEGMENT_COUNT
+    elseif segment < 1 then
+        return 1
+    end
+
+    return segment
+end
+
+--- Copies a colour into the style colour of one segment.
+-- tab: style the ring widget's style table
+-- int: i segment from 1 to `SEGMENT_COUNT`
+-- tab: source `{ a, r, g, b }` colour to copy
+local function _paint_segment(style, i, source)
+    local color = style[SEGMENT_STYLE_IDS[i]].color
+
+    color[1] = source[1]
+    color[2] = source[2]
+    color[3] = source[3]
+    color[4] = source[4]
+end
+
+--- Sizes one segment as a square centred on its point of the ring, on the given layer.
+-- tab: style the ring widget's style table
+-- int: i segment from 1 to `SEGMENT_COUNT`
+-- number: radius ring radius
+-- number: segment_size side of the square
+-- int: layer `SEGMENT_LAYER` or `MARKER_LAYER`
+local function _size_segment(style, i, radius, segment_size, layer)
+    local seg_style = style[SEGMENT_STYLE_IDS[i]]
+    local size = seg_style.size
+    local offset = seg_style.offset
+    local half_size = segment_size * 0.5
+
+    size[1] = segment_size
+    size[2] = segment_size
+    offset[1] = radius * SEGMENT_COS[i] - half_size
+    offset[2] = radius * SEGMENT_SIN[i] - half_size
+    offset[3] = layer
 end
 
 --- Copies a colour setting into a colour array.
@@ -154,7 +220,7 @@ local function _build_definitions()
             pass_type = "rect",
             style_id = SEGMENT_STYLE_IDS[i],
             style = {
-                offset = { 0, 0, 1 },
+                offset = { 0, 0, SEGMENT_LAYER },
                 size = { 3, 3 },
                 color = { SEG_DIM_COLOR[1], SEG_DIM_COLOR[2], SEG_DIM_COLOR[3], SEG_DIM_COLOR[4] }
             }
@@ -207,6 +273,9 @@ HudElementPerfectThrust.init = function (self, parent, draw_layer, start_scale)
 
     self._radius = 32
     self._thickness = 3
+    self._marker_size_scale = 2
+    self._thickness_scale = 1
+    self._sized_marker = 0
     self._shown = false
     self._source = nil
     self._ready_seen = false
@@ -217,6 +286,7 @@ HudElementPerfectThrust.init = function (self, parent, draw_layer, start_scale)
     self._heavy_color = { 0, 0, 0, 0 }
     self._ready_color = { 0, 0, 0, 0 }
     self._pulse_color = { 0, 0, 0, 0 }
+    self._marker_color = { 0, 0, 0, 0 }
     self._following_crosshair = false
     self._crosshair_x = 0
     self._crosshair_y = 0
@@ -229,13 +299,14 @@ HudElementPerfectThrust.init = function (self, parent, draw_layer, start_scale)
     self:_apply_display_settings(mod._settings, RING_KEYS[SOURCE_WINDUP])
 end
 
---- Forgets the last drawn lit count, READY and heavy attack state and pulse colour phase, so the
--- next refresh rewrites every segment colour.
+--- Forgets the last drawn lit count, READY and heavy attack state, pulse colour phase and marker
+-- segment, so the next refresh rewrites every segment colour.
 HudElementPerfectThrust._clear_render_cache = function (self)
     self._last_lit = nil
     self._last_ready = nil
     self._last_heavy = nil
     self._last_pulse = nil
+    self._last_marker = nil
 end
 
 --- Updates the ring from the tracker once per frame.
@@ -246,7 +317,8 @@ end
 -- when the other tracker takes it or a shot restarts the aiming blessings after READY, applies the
 -- shown ring's settings when that ring or the settings changed, starts the pulse the first time
 -- the heavy attack becomes available before READY and the first time READY is reached, and
--- advances it.
+-- advances it. The auto-release marker comes from the tracker each frame and runs on its own time,
+-- so the pulse neither delays nor restarts it; the aim tracker never reports one.
 -- number: dt frame delta time
 -- number: t time
 -- tab: ui_renderer active UI renderer
@@ -256,11 +328,11 @@ HudElementPerfectThrust.update = function (self, dt, t, ui_renderer, render_sett
     HudElementPerfectThrust.super.update(self, dt, t, ui_renderer, render_settings, input_service)
 
     local settings = mod._settings
-    local source, visible, fill, ready, heavy_available
+    local source, visible, fill, ready, heavy_available, marker
 
     if Tracker.is_charging_heavy_attack() then
         source = SOURCE_WINDUP
-        visible, fill, ready, heavy_available = Tracker.refresh(settings.timing_mode)
+        visible, fill, ready, heavy_available, marker = Tracker.refresh(settings.timing_mode)
     elseif settings.show_ads_blessings then
         source = SOURCE_AIM
         visible, fill, ready = AimTracker.refresh(self._parent:player_extensions())
@@ -326,7 +398,7 @@ HudElementPerfectThrust.update = function (self, dt, t, ui_renderer, render_sett
         end
     end
 
-    self:_refresh_ring(fill, ready, heavy_available)
+    self:_refresh_ring(fill, ready, heavy_available, marker)
 
     if self._pulse_remaining > 0 then
         local remaining = self._pulse_remaining - dt
@@ -341,7 +413,7 @@ HudElementPerfectThrust.update = function (self, dt, t, ui_renderer, render_sett
             self:_apply_geometry(1)
 
             -- Back to the READY colour on the frame the segments return to their normal size.
-            self:_refresh_ring(fill, ready, heavy_available)
+            self:_refresh_ring(fill, ready, heavy_available, marker)
         end
     end
 end
@@ -394,20 +466,27 @@ HudElementPerfectThrust._draw_widgets = function (self, dt, t, input_service, ui
     HudElementPerfectThrust.super._draw_widgets(self, dt, t, input_service, ui_renderer, render_settings)
 end
 
---- Colours the segments for a fill, READY and heavy attack state and pulse colour phase, when any
--- of them changed since the last call.
+--- Colours the segments for a fill, READY and heavy attack state, pulse colour phase and marker
+-- segment, when any of them changed since the last call.
 -- At READY every segment is lit in the READY colour, or in the READY pulse colour while the
--- READY pulse runs. Before READY the lit segments use the heavy attack available colour once the
--- heavy attack is available, and the charging colour before that.
+-- READY pulse runs, except the auto-release marker's segment, which has the marker colour and,
+-- through `_resize_marker`, the marker size. Before READY the lit segments use the heavy attack
+-- available colour once the heavy attack is available, and the charging colour before that. When
+-- only the marker moved, the segment it left gets its colour back and the one it reached the
+-- marker colour; anything else rewrites every segment's colour.
 -- number: fill fill fraction from 0 to 1
 -- bool: ready whether every tracked effect is at its maximum
 -- ?bool: heavy_available whether the heavy attack is available while the effects still build
-HudElementPerfectThrust._refresh_ring = function (self, fill, ready, heavy_available)
+-- ?number: marker_progress auto-release marker progress from 0 to 1, or nil without a marker
+HudElementPerfectThrust._refresh_ring = function (self, fill, ready, heavy_available, marker_progress)
     local lit = ready and SEGMENT_COUNT or _lit_count(fill)
     local pulse = ready and self._pulse_remaining > 0
     local heavy = not ready and heavy_available or false
+    local marker = ready and _marker_segment(marker_progress) or 0
+    local last_marker = self._last_marker
+    local ring_unchanged = lit == self._last_lit and ready == self._last_ready and heavy == self._last_heavy and pulse == self._last_pulse
 
-    if lit == self._last_lit and ready == self._last_ready and heavy == self._last_heavy and pulse == self._last_pulse then
+    if ring_unchanged and marker == last_marker then
         return
     end
 
@@ -415,6 +494,7 @@ HudElementPerfectThrust._refresh_ring = function (self, fill, ready, heavy_avail
     self._last_ready = ready
     self._last_heavy = heavy
     self._last_pulse = pulse
+    self._last_marker = marker
 
     local lit_color
 
@@ -430,21 +510,37 @@ HudElementPerfectThrust._refresh_ring = function (self, fill, ready, heavy_avail
     local widget = self._widgets_by_name.ring
     local style = widget.style
 
-    for i = 1, SEGMENT_COUNT do
-        local color = style[SEGMENT_STYLE_IDS[i]].color
-        local source = i <= lit and lit_color or dim_color
+    if ring_unchanged then
+        -- Only the marker moved.
+        if last_marker > 0 then
+            _paint_segment(style, last_marker, last_marker <= lit and lit_color or dim_color)
+        end
+    else
+        for i = 1, SEGMENT_COUNT do
+            local color = style[SEGMENT_STYLE_IDS[i]].color
+            local source = i <= lit and lit_color or dim_color
 
-        color[1] = source[1]
-        color[2] = source[2]
-        color[3] = source[3]
-        color[4] = source[4]
+            color[1] = source[1]
+            color[2] = source[2]
+            color[3] = source[3]
+            color[4] = source[4]
+        end
+    end
+
+    if marker > 0 then
+        _paint_segment(style, marker, self._marker_color)
+    end
+
+    if marker ~= self._sized_marker then
+        self:_resize_marker(marker)
     end
 
     widget.dirty = true
 end
 
 --- Positions and sizes every segment on the ring.
--- Each segment is a square of the thickness setting, centred on the ring's radius.
+-- Each segment is a square of the thickness setting, centred on the ring's radius; the
+-- auto-release marker's segment is `auto_release_marker_size` times as large, on its own layer.
 -- number: thickness_scale multiplier of the segment size, above 1 during the READY pulse
 HudElementPerfectThrust._apply_geometry = function (self, thickness_scale)
     local radius = self._radius
@@ -452,6 +548,8 @@ HudElementPerfectThrust._apply_geometry = function (self, thickness_scale)
     local half_size = segment_size * 0.5
     local widget = self._widgets_by_name.ring
     local style = widget.style
+
+    self._thickness_scale = thickness_scale
 
     for i = 1, SEGMENT_COUNT do
         local seg_style = style[SEGMENT_STYLE_IDS[i]]
@@ -464,7 +562,34 @@ HudElementPerfectThrust._apply_geometry = function (self, thickness_scale)
         offset[2] = radius * SEGMENT_SIN[i] - half_size
     end
 
+    local marker = self._sized_marker
+
+    if marker > 0 then
+        _size_segment(style, marker, radius, segment_size * self._marker_size_scale, MARKER_LAYER)
+    end
+
     widget.dirty = true
+end
+
+--- Moves the auto-release marker's size to another segment.
+-- The segment the marker left gets the normal size and layer back, and the new one the marker's
+-- size and layer, at the current pulse scale. The caller marks the widget dirty.
+-- int: marker marker segment from 1 to `SEGMENT_COUNT`, or 0 without a marker
+HudElementPerfectThrust._resize_marker = function (self, marker)
+    local previous = self._sized_marker
+    local style = self._widgets_by_name.ring.style
+    local radius = self._radius
+    local segment_size = self._thickness * self._thickness_scale
+
+    self._sized_marker = marker
+
+    if previous > 0 then
+        _size_segment(style, previous, radius, segment_size, SEGMENT_LAYER)
+    end
+
+    if marker > 0 then
+        _size_segment(style, marker, radius, segment_size * self._marker_size_scale, MARKER_LAYER)
+    end
 end
 
 --- Hides the ring, ends a running pulse and resets the per-windup or per-aim display state.
@@ -473,6 +598,10 @@ HudElementPerfectThrust._hide = function (self)
     self._source = nil
     self._ready_seen = false
     self._heavy_seen = false
+
+    if self._sized_marker > 0 then
+        self:_resize_marker(0)
+    end
 
     if self._pulse_remaining > 0 then
         self._pulse_remaining = 0
@@ -488,7 +617,7 @@ HudElementPerfectThrust._hide = function (self)
     widget.dirty = true
 end
 
---- Applies one ring's position, radius, thickness and colour settings.
+--- Applies one ring's position, radius, thickness, auto-release marker size and colour settings.
 -- Records the settings version and the ring it applied, so `update` only calls it again after a
 -- change or when the other ring is shown.
 -- tab: settings `mod._settings`
@@ -501,6 +630,7 @@ HudElementPerfectThrust._apply_display_settings = function (self, settings, keys
 
     self._radius = settings[keys.ring_radius] or RingSettings.default_value("ring_radius")
     self._thickness = settings[keys.ring_thickness] or RingSettings.default_value("ring_thickness")
+    self._marker_size_scale = settings[keys.auto_release_marker_size] or RingSettings.default_value("auto_release_marker_size")
     self._pulse_remaining = 0
 
     _copy_setting_color(self._dim_color, settings[keys.unfilled_color], SEG_DIM_COLOR)
@@ -508,6 +638,7 @@ HudElementPerfectThrust._apply_display_settings = function (self, settings, keys
     _copy_setting_color(self._heavy_color, settings[keys.heavy_available_color], SEG_HEAVY_COLOR)
     _copy_setting_color(self._ready_color, settings[keys.ready_color], SEG_READY_COLOR)
     _copy_setting_color(self._pulse_color, settings[keys.ready_pulse_color], SEG_READY_COLOR)
+    _copy_setting_color(self._marker_color, settings[keys.auto_release_marker_color], SEG_MARKER_COLOR)
 
     self:_apply_geometry(1)
     self:_clear_render_cache()

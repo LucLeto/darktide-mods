@@ -1,10 +1,11 @@
 --- Perfect Thrust's DMF mod data; the mod description and the settings menu.
 -- The returned table names the mod, makes it togglable and declares three groups. `Charge
--- indicator`: display mode, READY timing, heavy attack threshold, crosshair following, ring size,
--- thickness, horizontal and vertical offset, READY pulse and the unfilled, charging, heavy attack
--- available, READY and READY pulse colours. `Aiming indicator`: the aiming blessings switch and
--- the aiming ring's own display mode, crosshair following, size, thickness, offsets, READY pulse
--- and colours, without the heavy attack available colour. `Miscellaneous`: debug output, which
+-- indicator`: display mode, READY timing, heavy attack threshold, auto-release marker, crosshair
+-- following, ring size, thickness, horizontal and vertical offset, READY pulse, the unfilled,
+-- charging, heavy attack available, READY, READY pulse and auto-release marker colours and the
+-- auto-release marker size. `Aiming indicator`: the aiming blessings switch and the aiming ring's
+-- own display mode, crosshair following, size, thickness, offsets, READY pulse and colours, without
+-- the heavy attack available colour and the auto-release marker settings. `Miscellaneous`: debug output, which
 -- covers both rings. Every option has a tooltip. Colours are DMF colour pickers with alpha,
 -- stored as `{ a, r, g, b }`; the melee ring's alpha replaces the opacity setting of earlier
 -- versions, which `PerfectThrust.lua` migrates once.
@@ -39,6 +40,12 @@ local charge_widgets = {
         type = "checkbox",
         default_value = true,
         tooltip = "show_heavy_threshold_tooltip"
+    },
+    {
+        setting_id = "show_auto_release_marker",
+        type = "checkbox",
+        default_value = true,
+        tooltip = "show_auto_release_marker_tooltip"
     }
 }
 

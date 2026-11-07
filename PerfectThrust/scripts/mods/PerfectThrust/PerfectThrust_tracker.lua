@@ -21,6 +21,15 @@
 -- then READY once the effects are at their maximum. The tracking mode is chosen once when the
 -- windup starts, and READY always follows the effects when there are any.
 --
+-- With the `show_auto_release_marker` setting on, READY also starts the auto-release marker, a
+-- countdown from READY to the moment the input parser completes the held heavy attack input on its
+-- own: its input sequence's second element has `auto_complete` set and completes once its
+-- `time_window` has passed, which fully charged attack mechanics such as the Unstoppable Force
+-- blessing need. That moment is read from the parser's running sequence, again only read, and read
+-- again every frame while the marker runs, so a release ends the marker at once. A windup without
+-- effects then tracks the heavy attack threshold even with `show_heavy_threshold` off, as the READY
+-- the marker starts from, but shows the ring only while the marker runs.
+--
 -- Loaded by `PerfectThrust.lua` through `mod:io_dofile` and stored as `mod._tracker`. The windup
 -- hooks there feed `on_windup_start`, `on_windup_update` and `on_windup_finish`, and the HUD
 -- element calls `refresh` once per frame while a windup is tracked. All state lives in module
@@ -91,6 +100,10 @@ local SEQUENCE_IS_RUNNING = 1
 local SEQUENCE_CURRENT_ELEMENT_INDEX = 2
 local SEQUENCE_ELEMENT_START_T = 3
 
+--- Shortest time in seconds from READY to the predicted automatic completion of the heavy attack
+-- input that still gets the auto-release marker; a shorter countdown would only flash.
+local MARKER_MIN_SPAN = 0.1
+
 --- Prefix of every debug line. Debug lines go through `mod:info`, which DMF writes to the game's
 -- console log only, unless the player changed DMF's logging settings.
 local DEBUG_PREFIX = "[Perfect Thrust] "
@@ -155,6 +168,14 @@ end
 -- trigger, `interval` the time between triggers, `triggers` how many the game has fired so far
 -- and `time_in_action` the latest fixed-step time in action. `fill` and `ready` are the last
 -- values returned by `Tracker.refresh`; `ready` stays set for the rest of the windup.
+-- `marker_only` is set when a windup without effects tracks its heavy attack threshold for the
+-- auto-release marker alone, with `show_heavy_threshold` off; its ring shows only while the marker
+-- runs. While the marker can run, `input_parser` is the local player's weapon action input parser
+-- and `heavy_sequence_i` the index of the heavy attack input's sequence in it, `hold_duration` the
+-- duration of that sequence's first element and `auto_complete_window` the time window of its
+-- second, which completes on its own. `auto_complete_t` is the latest predicted time in action of
+-- that completion, or `math.huge` without one, `marker_start_t` the time in action of the READY the
+-- marker started from and `marker_active` whether the marker runs.
 local state = {
     active = false,
     mode = nil,
@@ -175,7 +196,15 @@ local state = {
     weapon_action_component = nil,
     effect_count = 0,
     fill = 0,
-    ready = false
+    ready = false,
+    marker_only = false,
+    input_parser = nil,
+    heavy_sequence_i = 0,
+    hold_duration = 0,
+    auto_complete_window = 0,
+    auto_complete_t = math_huge,
+    marker_start_t = 0,
+    marker_active = false
 }
 
 -- ----------------------------------------------------------------------------
@@ -351,6 +380,14 @@ local function _reset_state()
     state.time_in_action = 0
     state.fill = 0
     state.ready = false
+    state.marker_only = false
+    state.input_parser = nil
+    state.heavy_sequence_i = 0
+    state.hold_duration = 0
+    state.auto_complete_window = 0
+    state.auto_complete_t = math_huge
+    state.marker_start_t = 0
+    state.marker_active = false
 end
 
 -- ----------------------------------------------------------------------------
@@ -382,22 +419,15 @@ local function _transition_chain_time(chain_action, used_input)
     return chain_time
 end
 
---- Returns how much of the heavy attack input's hold was already done when the windup started.
--- The game's input parser starts the hold timer of the heavy attack input when the attack press is
--- registered. In an attack chain that press often comes while the previous attack still runs, so
--- the hold is partly or fully done before the windup starts. This reads the timer from the parser's
--- latest frame: the heavy attack sequence must be running, either still on its first (hold)
--- element, whose start time is the press, or past it, when the hold is complete. A sequence that
--- is no longer running was already decided by a release, typically a quick tap during the previous
--- attack that turns this windup into a light attack. These are internals of `ActionInputParser`;
--- when the hold cannot be read, the caller counts it from the windup start, which is never early.
+--- Returns the local player's weapon action input parser and the index of one action input's
+-- sequence in it. The parser keeps one input sequence per action input of the wielded weapon
+-- template, indexed by the template's network lookup. These are internals of `ActionInputParser`;
+-- nothing is returned when they cannot be read.
 -- tab: action windup action instance
--- string: chain_input action input of the heavy attack transition
--- number: t fixed-step time the windup started at
--- number: hold_duration hold duration of the heavy attack input's first element
--- treturn: ?number seconds of the hold done at the windup start, from 0 to `hold_duration`
--- treturn: ?bool true when the parser was read but the heavy attack input had already been released
-local function _heavy_hold_elapsed(action, chain_input, t, hold_duration)
+-- string: action_input action input whose sequence to find
+-- treturn: ?tab the parser
+-- treturn: ?int index of the input's sequence
+local function _input_sequence(action, action_input)
     local script_unit = ScriptUnit
     local has_extension = type(script_unit) == "table" and script_unit.has_extension
     local unit = action._player_unit
@@ -414,14 +444,29 @@ local function _heavy_hold_elapsed(action, chain_input, t, hold_duration)
         return nil
     end
 
-    local ring_buffer = parser._sequences
-    local sequences = type(ring_buffer) == "table" and ring_buffer[parser._ring_buffer_index]
     local network_lookups = parser._ACTION_INPUT_NETWORK_LOOKUP
     local action_component = parser._action_component
     local network_lookup = type(network_lookups) == "table" and action_component and network_lookups[action_component.template_name]
-    local sequence_i = type(network_lookup) == "table" and network_lookup[chain_input]
+    local sequence_i = type(network_lookup) == "table" and network_lookup[action_input]
 
-    if type(sequences) ~= "table" or type(sequence_i) ~= "number" then
+    if type(sequence_i) ~= "number" then
+        return nil
+    end
+
+    return parser, sequence_i
+end
+
+--- Returns the state of one input sequence in the parser's latest frame.
+-- tab: parser weapon action input parser
+-- int: sequence_i index of the sequence
+-- treturn: ?bool whether the sequence runs, or nil when the frame cannot be read
+-- treturn: ?int its current element
+-- treturn: ?number fixed-step time that element started at, `-math.huge` while unset
+local function _sequence_state(parser, sequence_i)
+    local ring_buffer = parser._sequences
+    local sequences = type(ring_buffer) == "table" and ring_buffer[parser._ring_buffer_index]
+
+    if type(sequences) ~= "table" then
         return nil
     end
 
@@ -433,16 +478,38 @@ local function _heavy_hold_elapsed(action, chain_input, t, hold_duration)
         return nil
     end
 
-    local running = is_running[sequence_i]
+    return is_running[sequence_i], element_indices[sequence_i], element_start_ts[sequence_i]
+end
+
+--- Returns how much of the heavy attack input's hold was already done when the windup started.
+-- The game's input parser starts the hold timer of the heavy attack input when the attack press is
+-- registered. In an attack chain that press often comes while the previous attack still runs, so
+-- the hold is partly or fully done before the windup starts. This reads the timer from the parser's
+-- latest frame: the heavy attack sequence must be running, either still on its first (hold)
+-- element, whose start time is the press, or past it, when the hold is complete. A sequence that
+-- is no longer running was already decided by a release, typically a quick tap during the previous
+-- attack that turns this windup into a light attack. These are internals of `ActionInputParser`;
+-- when the hold cannot be read, the caller counts it from the windup start, which is never early.
+-- tab: action windup action instance
+-- string: chain_input action input of the heavy attack transition
+-- number: t fixed-step time the windup started at
+-- number: hold_duration hold duration of the heavy attack input's first element
+-- treturn: ?number seconds of the hold done at the windup start, from 0 to `hold_duration`
+-- treturn: ?bool true when the parser was read but the heavy attack input had already been released
+local function _heavy_hold_elapsed(action, chain_input, t, hold_duration)
+    local parser, sequence_i = _input_sequence(action, chain_input)
+
+    if not parser then
+        return nil
+    end
+
+    local running, element_index, start_t = _sequence_state(parser, sequence_i)
 
     if running == false then
         return nil, true
     elseif running ~= true then
         return nil
     end
-
-    local element_index = element_indices[sequence_i]
-    local start_t = element_start_ts[sequence_i]
 
     -- An unset start time is -math.huge; a start after the windup cannot belong to its press.
     if type(element_index) ~= "number" or type(start_t) ~= "number" or not (start_t > -math_huge and start_t <= t) then
@@ -572,6 +639,160 @@ local function _resolve_heavy_threshold(action, action_settings, weapon_action_c
 end
 
 -- ----------------------------------------------------------------------------
+-- Auto-release marker
+-- ----------------------------------------------------------------------------
+
+--- Returns what predicting the automatic completion of a windup's heavy attack input needs.
+-- After its hold, the heavy attack input waits for the release in the second element of its input
+-- sequence. With `auto_complete` set there, the parser completes the input on its own once that
+-- element's `time_window` has passed, and the action that follows counts as automatically
+-- completed, which fully charged attack mechanics require. Only a sequence of exactly these two
+-- elements is predicted, read from the weapon template's own input, so weapons with their own
+-- windows need no list. Nothing is returned for any other shape or when the parser cannot be read.
+-- tab: action windup action instance
+-- string: chain_input action input of the heavy attack transition
+-- treturn: ?tab the local player's weapon action input parser
+-- treturn: ?int index of the input's sequence in it
+-- treturn: ?number time window of the second element
+local function _resolve_auto_complete(action, chain_input)
+    local weapon_template = action._weapon_template
+    local action_inputs = weapon_template and weapon_template.action_inputs
+    local action_input = action_inputs and action_inputs[chain_input]
+    local input_sequence = action_input and action_input.input_sequence
+    local release_element = type(input_sequence) == "table" and input_sequence[2]
+
+    if type(release_element) ~= "table" or release_element.auto_complete ~= true or input_sequence[3] ~= nil then
+        return nil
+    end
+
+    local time_window = release_element.time_window
+
+    -- `not (x >= 0)` also rejects NaN, which fails every comparison.
+    if type(time_window) ~= "number" or not (time_window >= 0 and time_window < math_huge) then
+        return nil
+    end
+
+    local parser, sequence_i = _input_sequence(action, chain_input)
+
+    if not parser then
+        return nil
+    end
+
+    return parser, sequence_i, time_window
+end
+
+--- Returns the predicted fixed-step time at which the heavy attack input completes on its own.
+-- Read from the parser's latest frame. While the second element runs, its time window counts from
+-- its own start, the end of the hold; while the first one still runs, the end of the hold is
+-- predicted from its start, the press, and its duration. The parser completes the input on the
+-- first fixed step after that time. Nothing is returned once the sequence no longer runs, which a
+-- release or the completion itself ends, or when its state cannot be read.
+-- tab: parser weapon action input parser
+-- int: sequence_i index of the heavy attack input's sequence
+-- number: hold_duration duration of its first element
+-- number: time_window time window of its second element
+-- number: windup_t fixed-step time the windup started at
+-- treturn: ?number fixed-step time of the automatic completion
+local function _auto_complete_t(parser, sequence_i, hold_duration, time_window, windup_t)
+    local running, element_index, start_t = _sequence_state(parser, sequence_i)
+
+    -- An unset start time is -math.huge.
+    if running ~= true or type(start_t) ~= "number" or not (start_t > -math_huge and start_t < math_huge) then
+        return nil
+    end
+
+    if element_index == 2 then
+        return start_t + time_window
+    elseif element_index == 1 and start_t <= windup_t then
+        -- A press after the windup started cannot belong to it.
+        return start_t + hold_duration + time_window
+    end
+
+    return nil
+end
+
+--- Starts the auto-release marker at the READY just reported.
+-- The marker counts from this READY, as it is shown, to the predicted automatic completion, which
+-- a late READY does not move: in `confirmed` timing mode it only leaves less time. It is left out
+-- when the setting is off, when the completion cannot be predicted any more, or when it is less
+-- than `MARKER_MIN_SPAN` away.
+-- number: time_in_action time in action of the READY
+local function _start_marker(time_in_action)
+    local parser = state.input_parser
+
+    if not parser or not mod._settings.show_auto_release_marker then
+        return
+    end
+
+    local start_t = state.start_t
+    local auto_complete_t = _auto_complete_t(parser, state.heavy_sequence_i, state.hold_duration, state.auto_complete_window, start_t)
+    local remaining
+
+    if auto_complete_t then
+        auto_complete_t = auto_complete_t - start_t
+        remaining = auto_complete_t - time_in_action
+        state.auto_complete_t = auto_complete_t
+    end
+
+    state.marker_start_t = time_in_action
+    state.marker_active = remaining ~= nil and remaining >= MARKER_MIN_SPAN
+
+    if mod._settings.debug_logging then
+        if state.marker_active then
+            mod:info(DEBUG_PREFIX .. "auto-release marker from %.2fs to %.2fs (%.2fs)", time_in_action, auto_complete_t, remaining)
+        elseif remaining then
+            mod:info(DEBUG_PREFIX .. "auto-release marker skipped at %.2fs: %.2fs left", time_in_action, remaining)
+        else
+            mod:info(DEBUG_PREFIX .. "auto-release marker skipped at %.2fs: heavy attack input no longer held", time_in_action)
+        end
+    end
+end
+
+--- Returns where the auto-release marker is, by the fixed-step time in action rather than by frames.
+-- Re-reads the prediction on every call, so the actual start of the second element replaces a
+-- prediction made during the hold and a server correction is followed. Once the sequence no longer
+-- runs, released or completed, the marker ends for the rest of the windup.
+-- treturn: ?number progress from 0 at READY to 1 at the predicted automatic completion, or nil without a marker
+local function _marker_progress()
+    if not state.marker_active then
+        return nil
+    end
+
+    local start_t = state.start_t
+    local auto_complete_t = _auto_complete_t(state.input_parser, state.heavy_sequence_i, state.hold_duration, state.auto_complete_window, start_t)
+    local time_in_action = state.time_in_action
+
+    if not auto_complete_t then
+        state.marker_active = false
+
+        if mod._settings.debug_logging then
+            mod:info(DEBUG_PREFIX .. "auto-release marker ended after %.2fs: heavy attack input released or completed", time_in_action)
+        end
+
+        return nil
+    end
+
+    auto_complete_t = auto_complete_t - start_t
+    state.auto_complete_t = auto_complete_t
+
+    local marker_start_t = state.marker_start_t
+    local span = auto_complete_t - marker_start_t
+
+    -- A correction that moved the completion before the marker's start leaves nothing to count.
+    if not (span > 0) then
+        return 1
+    end
+
+    local progress = (time_in_action - marker_start_t) / span
+
+    if progress < 1 then
+        return progress > 0 and progress or 0
+    end
+
+    return 1
+end
+
+-- ----------------------------------------------------------------------------
 -- Debug output
 -- ----------------------------------------------------------------------------
 
@@ -605,6 +826,33 @@ local function _debug_finish(reason)
     mod:info(DEBUG_PREFIX .. "end (%s) after %.2fs, %d triggers, ready=%s: %s", tostring(reason), state.time_in_action, state.triggers, tostring(state.ready), _debug_effects())
 end
 
+--- Writes whether the game completed the heavy attack input on its own, next to the predicted
+-- time, when a windup that could show the auto-release marker finishes and debug output is
+-- enabled. The action handler hands the parser's flag to the action that follows right after this
+-- finish, without another input update in between; a sweep keeps it as `_auto_completed` for its
+-- fully charged behaviour, and `new_action_kind` names that action.
+-- ?tab: data finish data passed by the action handler
+-- ?number: time_in_action time in action at the finish
+local function _debug_auto_complete(data, time_in_action)
+    local parser = state.input_parser
+
+    if not parser or type(time_in_action) ~= "number" or not mod._settings.debug_logging then
+        return
+    end
+
+    local last_action_auto_completed = parser.last_action_auto_completed
+    local ok, auto_completed = false, nil
+
+    if type(last_action_auto_completed) == "function" then
+        ok, auto_completed = pcall(last_action_auto_completed, parser)
+    end
+
+    local auto_complete_t = state.auto_complete_t
+    local next_action = type(data) == "table" and data.new_action_kind or "none"
+
+    mod:info(DEBUG_PREFIX .. "input auto-completed=%s at %.2fs, predicted %.2fs (%+.2fs), next %s", ok and tostring(auto_completed) or "?", time_in_action, auto_complete_t, time_in_action - auto_complete_t, tostring(next_action))
+end
+
 -- ----------------------------------------------------------------------------
 -- Windup hooks
 -- ----------------------------------------------------------------------------
@@ -617,7 +865,11 @@ end
 -- `WeaponTraitParentProcBuff`. With the `show_heavy_threshold` setting on, it also resolves the
 -- heavy attack threshold: a windup with effects then gets the expected READY time and the heavy
 -- threshold's share of the ring, and a windup without effects tracks that threshold alone. Without
--- effects and without a resolvable threshold it stays idle.
+-- effects and without a resolvable threshold it stays idle. With the `show_auto_release_marker`
+-- setting on, it resolves the threshold as well, and from the input parser the predicted automatic
+-- completion of the heavy attack input that the marker counts down to; with `show_heavy_threshold`
+-- off, a windup without effects then tracks the threshold for the marker alone, and a windup with
+-- effects ignores it.
 -- tab: action windup action instance
 -- number: t fixed-step time the action started at
 Tracker.on_windup_start = function (action, t)
@@ -635,8 +887,9 @@ Tracker.on_windup_start = function (action, t)
     -- (the game ignores alternative chain lists when computing it) can still have a heavy attack.
     local has_trigger_time = first_trigger_t and first_trigger_t ~= math_huge
     local show_heavy_threshold = mod._settings.show_heavy_threshold
+    local show_marker = mod._settings.show_auto_release_marker
 
-    if not has_trigger_time and not show_heavy_threshold then
+    if not has_trigger_time and not show_heavy_threshold and not show_marker then
         return
     end
 
@@ -703,8 +956,34 @@ Tracker.on_windup_start = function (action, t)
     local action_name = weapon_action_component.current_action_name
     local heavy_threshold, chain_input, hold_duration, chain_time, time_scale, buffer_time, hold_elapsed, hold_released
 
-    if show_heavy_threshold then
+    if show_heavy_threshold or show_marker then
         heavy_threshold, chain_input, hold_duration, chain_time, time_scale, buffer_time, hold_elapsed, hold_released = _resolve_heavy_threshold(action, action_settings, weapon_action_component, t)
+    end
+
+    -- The auto-release marker needs the heavy attack transition and a running heavy attack input
+    -- whose automatic completion can be predicted.
+    local parser, sequence_i, time_window, auto_complete_t
+
+    if show_marker and heavy_threshold then
+        parser, sequence_i, time_window = _resolve_auto_complete(action, chain_input)
+        auto_complete_t = parser and _auto_complete_t(parser, sequence_i, hold_duration, time_window, t)
+
+        if not auto_complete_t then
+            parser = nil
+        end
+    end
+
+    -- With `show_heavy_threshold` off the threshold was resolved for the marker alone: a windup
+    -- without effects tracks it as the READY the marker starts from and shows the ring only while
+    -- the marker runs, and a windup with effects shows them as without the threshold.
+    local marker_only = false
+
+    if heavy_threshold and not show_heavy_threshold then
+        if count == 0 and parser then
+            marker_only = true
+        else
+            heavy_threshold = nil
+        end
     end
 
     if count == 0 and not heavy_threshold then
@@ -749,6 +1028,14 @@ Tracker.on_windup_start = function (action, t)
     state.effect_count = count
     state.fill = 0
     state.ready = false
+    state.marker_only = marker_only
+    state.input_parser = parser
+    state.heavy_sequence_i = parser and sequence_i or 0
+    state.hold_duration = parser and hold_duration or 0
+    state.auto_complete_window = parser and time_window or 0
+    state.auto_complete_t = parser and auto_complete_t - t or math_huge
+    state.marker_start_t = 0
+    state.marker_active = false
 
     if mod._settings.debug_logging then
         -- How much of the hold was done before the windup, `released` when the heavy attack input had
@@ -763,6 +1050,12 @@ Tracker.on_windup_start = function (action, t)
             if heavy_threshold then
                 mod:info(DEBUG_PREFIX .. "heavy threshold %.2fs (%s hold %.2fs, held %s, chain %.2fs, time scale %.2f, buffer %.2fs), expected READY %.2fs", heavy_threshold, chain_input, hold_duration, held, chain_time, time_scale, buffer_time, ready_t)
             end
+        end
+
+        if parser then
+            mod:info(DEBUG_PREFIX .. "%s auto-completes at %.2fs (window %.2fs)%s", chain_input, auto_complete_t - t, time_window, marker_only and ", ring from READY" or "")
+        elseif show_marker then
+            mod:info(DEBUG_PREFIX .. "auto-complete not predicted for %s", tostring(chain_input))
         end
     end
 end
@@ -795,12 +1088,15 @@ end
 -- and is not hooked; its end is caught by the weapon_action check in `Tracker.refresh`.
 -- tab: action windup action instance
 -- string: reason finish reason passed by the action handler
-Tracker.on_windup_finish = function (action, reason)
+-- ?tab: data finish data passed by the action handler
+-- ?number: time_in_action time in action at the finish
+Tracker.on_windup_finish = function (action, reason, data, time_in_action)
     if action ~= state.action then
         return
     end
 
     _debug_finish(reason)
+    _debug_auto_complete(data, time_in_action)
     _reset_state()
 end
 
@@ -831,11 +1127,17 @@ end
 -- time up to its expected cap in `predicted` mode for predictable effects and by the replicated
 -- stacks otherwise. Effects that are not confirmed yet hold the fill below full. READY follows the
 -- same rule as above and additionally waits for the heavy threshold.
+--
+-- Whichever way READY is reached, it starts the auto-release marker when the automatic completion
+-- of the heavy attack input is predicted far enough ahead. The marker's progress comes with every
+-- later refresh until the windup ends or the input no longer runs; the other values keep their
+-- meaning. A windup tracked for the marker alone is visible only while the marker runs.
 -- string: timing_mode `predicted` or `confirmed`
 -- treturn: bool whether the ring should be visible
 -- treturn: number fill fraction from 0 to 1
 -- treturn: bool whether every confirmed effect is at its maximum, or the heavy threshold is reached
 -- treturn: bool whether the heavy attack is available while the effects still build
+-- treturn: ?number auto-release marker progress from 0 at READY to 1 at the predicted automatic completion, or nil without a marker
 Tracker.refresh = function (timing_mode)
     if not state.active then
         return false, 0, false, false
@@ -864,6 +1166,8 @@ Tracker.refresh = function (timing_mode)
                 if mod._settings.debug_logging then
                     mod:info(DEBUG_PREFIX .. "READY after %.2fs (regular heavy)", time_in_action)
                 end
+
+                _start_marker(time_in_action)
             elseif time_in_action > 0 then
                 fill = time_in_action / heavy_threshold
             else
@@ -873,7 +1177,14 @@ Tracker.refresh = function (timing_mode)
 
         state.fill = fill
 
-        return true, fill, state.ready, false
+        local marker = _marker_progress()
+
+        -- Tracked for the auto-release marker alone, the ring shows only while the marker runs.
+        if state.marker_only and not marker then
+            return false, 0, false, false
+        end
+
+        return true, fill, state.ready, false, marker
     end
 
     local buff_extension = state.buff_extension
@@ -979,13 +1290,15 @@ Tracker.refresh = function (timing_mode)
             if mod._settings.debug_logging then
                 mod:info(DEBUG_PREFIX .. "READY after %.2fs (%d triggers, %s): %s", time_in_action, triggers, predicted and "predicted" or "confirmed", _debug_effects())
             end
+
+            _start_marker(time_in_action)
         elseif fill < 0 then
             fill = 0
         end
 
         state.fill = fill
 
-        return true, fill, state.ready, false
+        return true, fill, state.ready, false, _marker_progress()
     end
 
     if heavy_available and not state.heavy_available then
@@ -1005,6 +1318,8 @@ Tracker.refresh = function (timing_mode)
         if mod._settings.debug_logging then
             mod:info(DEBUG_PREFIX .. "READY after %.2fs (%d triggers, %s): %s", time_in_action, triggers, predicted and "predicted" or "confirmed", _debug_effects())
         end
+
+        _start_marker(time_in_action)
     else
         fill = heavy_available and ring_fill or time_in_action / state.ready_t
 
@@ -1017,7 +1332,7 @@ Tracker.refresh = function (timing_mode)
 
     state.fill = fill
 
-    return true, fill, state.ready, heavy_available
+    return true, fill, state.ready, heavy_available, _marker_progress()
 end
 
 -- ----------------------------------------------------------------------------
