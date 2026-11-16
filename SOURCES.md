@@ -4,7 +4,7 @@ This file is generated automatically. Commit links identify the exact upstream r
 
 | Mod | Source repository | Branch | Commit |
 | --- | --- | --- | --- |
-| Radar | [LucLeto/darktide-mods-radar](https://github.com/LucLeto/darktide-mods-radar) | main | [`f3301c2`](https://github.com/LucLeto/darktide-mods-radar/commit/f3301c29d53ab0635e7bdfc3f576d5f860127b63) |
+| Radar | [LucLeto/darktide-mods-radar](https://github.com/LucLeto/darktide-mods-radar) | main | [`598f8e5`](https://github.com/LucLeto/darktide-mods-radar/commit/598f8e588f80f4bedff4cd4b41df3e21d24ad209) |
 | Icon Browser | [LucLeto/darktide-mods-icon-browser](https://github.com/LucLeto/darktide-mods-icon-browser) | main | [`c7289da`](https://github.com/LucLeto/darktide-mods-icon-browser/commit/c7289da88dde5c611cfec6057c7f40ed08485608) |
 | Overflow Meter | [LucLeto/darktide-mods-overflow-meter](https://github.com/LucLeto/darktide-mods-overflow-meter) | main | [`dbaee03`](https://github.com/LucLeto/darktide-mods-overflow-meter/commit/dbaee03e83de5ad3f78d7bd314cbc7f6a03c8600) |
 | Show CJK Glyphs Plus | [LucLeto/darktide-mods-show-cjk-glyphs-plus](https://github.com/LucLeto/darktide-mods-show-cjk-glyphs-plus) | main | [`122cf2b`](https://github.com/LucLeto/darktide-mods-show-cjk-glyphs-plus/commit/122cf2bbc9a9c6b58d13e9669b75402b2c5e7e7f) |
