@@ -13,6 +13,7 @@ An automatically synchronized collection of [LucLeto's](https://github.com/LucLe
 | For Da Emprah | [`ForDaEmprah/`](ForDaEmprah/) | [LucLeto/darktide-mods-for-da-emprah](https://github.com/LucLeto/darktide-mods-for-da-emprah) |
 | Skitarii Chat | [`SkitariiChat/`](SkitariiChat/) | [LucLeto/darktide-mods-skitarii-chat](https://github.com/LucLeto/darktide-mods-skitarii-chat) |
 | Perfect Keystones | [`PerfectKeystones/`](PerfectKeystones/) | [LucLeto/darktide-mods-perfect-keystones](https://github.com/LucLeto/darktide-mods-perfect-keystones) |
+| Friends List Fix | [`FriendsListFix/`](FriendsListFix/) | [LucLeto/darktide-mods-friends-list-fix](https://github.com/LucLeto/darktide-mods-friends-list-fix) |
 
 The individual source repositories remain the canonical development repositories. Please send issues and pull requests for a specific mod to its source repository. Treat the mirrored mod directories here as read-only: direct edits will be overwritten by synchronization.
 

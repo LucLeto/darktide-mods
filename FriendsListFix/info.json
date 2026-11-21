@@ -1,0 +1,11 @@
+{
+  "name": "Friends List Fix",
+  "description": "Fixes a Darktide 1.13.0 bug that lists friends twice when they’re added both in-game and on Steam, Xbox, or PlayStation. The fix only affects the Friends tab display and keeps an original entry for inspecting, inviting, and other player actions.",
+  "version": "1.0.0",
+  "author": "LucLeto",
+  "homepage": "https://www.nexusmods.com/games/warhammer40kdarktide/mods/1683",
+  "source": "https://github.com/LucLeto/darktide-mods-friends-list-fix",
+  "funding": {
+    "kofi": "https://ko-fi.com/lucleto"
+  }
+}

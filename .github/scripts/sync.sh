@@ -80,8 +80,9 @@ sync_mod 'Boss Health Fix' 'LucLeto/darktide-mods-boss-health-fix' 'BossHealthFi
 sync_mod 'For Da Emprah' 'LucLeto/darktide-mods-for-da-emprah' 'ForDaEmprah'
 sync_mod 'Skitarii Chat' 'LucLeto/darktide-mods-skitarii-chat' 'SkitariiChat'
 sync_mod 'Perfect Keystones' 'LucLeto/darktide-mods-perfect-keystones' 'PerfectKeystones'
+sync_mod 'Friends List Fix' 'LucLeto/darktide-mods-friends-list-fix' 'FriendsListFix'
 
-generated_directories=(Radar IconBrowser OverflowMeter ShowCnJaKoGlyphsPlus PerfectThrust BossHealthFix ForDaEmprah SkitariiChat PerfectKeystones LICENSES)
+generated_directories=(Radar IconBrowser OverflowMeter ShowCnJaKoGlyphsPlus PerfectThrust BossHealthFix ForDaEmprah SkitariiChat PerfectKeystones FriendsListFix LICENSES)
 for directory in "${generated_directories[@]}"; do
   if [[ -L "$repository_root/$directory" ]]; then
     echo "Error: refusing to replace symlink $directory/." >&2
