@@ -4,7 +4,7 @@ This file is generated automatically. Commit links identify the exact upstream r
 
 | Mod | Source repository | Branch | Commit |
 | --- | --- | --- | --- |
-| Radar | [LucLeto/darktide-mods-radar](https://github.com/LucLeto/darktide-mods-radar) | main | [`f75d170`](https://github.com/LucLeto/darktide-mods-radar/commit/f75d17067240609b9d085ec737b18dfaa186b2e0) |
+| Radar | [LucLeto/darktide-mods-radar](https://github.com/LucLeto/darktide-mods-radar) | main | [`6037eaa`](https://github.com/LucLeto/darktide-mods-radar/commit/6037eaab2440429fa58ba81cd5d80dba1b6abd60) |
 | Icon Browser | [LucLeto/darktide-mods-icon-browser](https://github.com/LucLeto/darktide-mods-icon-browser) | main | [`c7289da`](https://github.com/LucLeto/darktide-mods-icon-browser/commit/c7289da88dde5c611cfec6057c7f40ed08485608) |
 | Overflow Meter | [LucLeto/darktide-mods-overflow-meter](https://github.com/LucLeto/darktide-mods-overflow-meter) | main | [`dbaee03`](https://github.com/LucLeto/darktide-mods-overflow-meter/commit/dbaee03e83de5ad3f78d7bd314cbc7f6a03c8600) |
 | Show CJK Glyphs Plus | [LucLeto/darktide-mods-show-cjk-glyphs-plus](https://github.com/LucLeto/darktide-mods-show-cjk-glyphs-plus) | main | [`122cf2b`](https://github.com/LucLeto/darktide-mods-show-cjk-glyphs-plus/commit/122cf2bbc9a9c6b58d13e9669b75402b2c5e7e7f) |
@@ -13,4 +13,4 @@ This file is generated automatically. Commit links identify the exact upstream r
 | For Da Emprah | [LucLeto/darktide-mods-for-da-emprah](https://github.com/LucLeto/darktide-mods-for-da-emprah) | main | [`4696095`](https://github.com/LucLeto/darktide-mods-for-da-emprah/commit/4696095470524d4abf7346b8c8c4b259a9eb0bd5) |
 | Skitarii Chat | [LucLeto/darktide-mods-skitarii-chat](https://github.com/LucLeto/darktide-mods-skitarii-chat) | main | [`57fe3ed`](https://github.com/LucLeto/darktide-mods-skitarii-chat/commit/57fe3ed883fea60a6cb89000ef6ec6d31415558a) |
 | Perfect Keystones | [LucLeto/darktide-mods-perfect-keystones](https://github.com/LucLeto/darktide-mods-perfect-keystones) | main | [`c0391e0`](https://github.com/LucLeto/darktide-mods-perfect-keystones/commit/c0391e088d206e17498425b93a2c773cd4856da6) |
-| Friends List Fix | [LucLeto/darktide-mods-friends-list-fix](https://github.com/LucLeto/darktide-mods-friends-list-fix) | main | [`f9989d9`](https://github.com/LucLeto/darktide-mods-friends-list-fix/commit/f9989d934d3894c1fbad0fa4465d2e0fe79377d9) |
+| Friends List Fix | [LucLeto/darktide-mods-friends-list-fix](https://github.com/LucLeto/darktide-mods-friends-list-fix) | main | [`db277dc`](https://github.com/LucLeto/darktide-mods-friends-list-fix/commit/db277dcabf2569deb77d9b9ead57c0f56bfe9186) |
